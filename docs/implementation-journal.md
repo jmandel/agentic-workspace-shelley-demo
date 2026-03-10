@@ -269,3 +269,42 @@
 - `go test ./server -run 'TestWorkspaceTools|TestWorkspaceFiles|TestWorkspace|TestEmitWorkspace'` in `shelley/`
 - `go test ./db ./server` in `shelley/`
 - `./test/smoke.sh` from the workspace root
+
+### 2026-03-10 update — workspace tool audit log
+- Added a durable `workspace_tool_log` table in `db/schema/019-workspace-tool-log.sql`.
+- Workspace tool calls now write audit entries capturing:
+  - tool id
+  - topic name
+  - action
+  - subject (`agent:{topic}`)
+  - access decision
+  - truncated input summary
+- `GET /ws/tools/{tool}` now includes recent log entries in `.log`.
+
+### Runtime behavior added in this slice
+- Added a predictable-model test trigger:
+  - prompt format `workspace_tool: <tool> <action>`
+  - if the current request tool list includes `workspace_<tool>`, the predictable model emits a real tool call
+- This made it possible to test the full path:
+  - topic prompt
+  - dynamic `workspace_*` tool exposure
+  - tool execution entrypoint
+  - access decision
+  - audit log persistence
+- Current decision logging behavior:
+  - `allowed` grants log `allowed`
+  - `approval_required` currently logs `denied` because approval flow is not implemented yet
+  - missing/denied access also logs `denied` if the runtime path is reached
+
+### Scope boundary
+- The cumulative smoke script still only exercises workspace tool metadata endpoints live (`POST/GET/DELETE /ws/tools`).
+- The new audit behavior is covered by Shelley server tests instead, because the checked-out Bun CLI has no direct built-in way to trigger a named `workspace_*` tool call.
+
+### Additional tests added
+- allowed workspace tool call produces a persisted audit log entry visible on `GET /ws/tools/{tool}`
+- approval-required workspace tool call logs a denied decision
+
+### Validation update — workspace tool audit log checkpoint
+- `go test ./server -run 'TestWorkspaceTools|TestWorkspaceFiles|TestWorkspace|TestEmitWorkspace'` in `shelley/`
+- `go test ./db ./server` in `shelley/`
+- `./test/smoke.sh` from the workspace root
