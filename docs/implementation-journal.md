@@ -631,3 +631,20 @@
 - This surfaced one remaining demo gap clearly:
   - the manager/runtime filesystem path is now straightforward, but Shelley still only executes workspace tools through the `mcp` protocol
   - the demo's `fhir-validator` story therefore still needs a local executable tool path, likely an `exec`-style workspace tool protocol, rather than only more launcher work
+
+### 2026-03-10 update — stdio MCP command resolution from shared tools
+- Tightened Shelley's stdio MCP execution path so bare command names resolve from `$WORKSPACE_TOOLS_DIR/bin` before falling back to ambient `PATH`.
+- Practical effect:
+  - if a workspace runtime has a shared tools mount exposing `/tools/bin/bun`, an MCP stdio registration can use `"command":"bun"` and Shelley will find it
+  - this reduces coupling between hosted MCP registrations and global host installs
+- Kept the fallback behavior:
+  - absolute command paths still work
+  - slash-containing relative paths are still passed through as-is
+  - normal `PATH` lookup still works when the shared tools dir does not contain the command
+- Validation:
+  - `go test ./server -run 'TestWorkspaceToolMCP'` in `shelley/`
+  - `go test ./server` in `shelley/`
+  - `./test/smoke.sh`
+- Design consequence for the demo:
+  - MCP tools now have a better runtime story with shared tool bundles or system installs
+  - the remaining modeling question is specifically about trusted local non-MCP tools such as `fhir-validator` and `ig-publisher`, not about MCP stdio transport itself
