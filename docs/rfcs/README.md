@@ -1,16 +1,9 @@
 # RFCs
 
-This directory holds design notes that are more stable than the running
-implementation journal and more focused than the broad WIP plan.
+The active protocol RFCs now live in the protocol repo:
 
-Conventions:
-- file names use `NNNN-short-title.md`
-- statuses are `draft`, `proposed`, `accepted`, `superseded`, or `rejected`
-- each RFC should describe the problem, the decision, and the main tradeoffs
+- [agentic-workspace/rfcs/README.md](/home/jmandel/hobby/workspace-protocol/agentic-workspace/rfcs/README.md)
 
-Current RFCs:
-- [0002-topic-realtime-wire-contract.md](./0002-topic-realtime-wire-contract.md)
-- [0003-workspace-tool-api-payloads.md](./0003-workspace-tool-api-payloads.md)
-- [0004-approval-workflow-semantics.md](./0004-approval-workflow-semantics.md)
-- [0005-local-tool-catalog.md](./0005-local-tool-catalog.md)
-- [0006-topic-prompt-queue-management.md](./0006-topic-prompt-queue-management.md)
+This root repo keeps implementation notes and demo work. The canonical RFC
+documents moved alongside the draft protocol spec in
+`agentic-workspace/rfcs/`.

@@ -858,3 +858,12 @@
   - local `bash` flows that exercise mounted FHIR tooling
   - MCP tool calls such as the HL7 Jira fixture
 - The goal is to make the live demo show real tool traffic without depending on a non-deterministic model.
+
+### 2026-03-10 update — protocol RFCs moved into `agentic-workspace`
+- The canonical RFC set now lives in `agentic-workspace/rfcs/` instead of this
+  root scratch repo.
+- Rationale:
+  - the RFCs are protocol-facing, not Shelley-manager implementation notes
+  - keeping them next to `agent-workspace.md` makes the spec easier to evolve in
+    one place
+- The root `docs/rfcs/README.md` now just points at the protocol repo copy.
