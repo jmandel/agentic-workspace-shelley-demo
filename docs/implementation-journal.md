@@ -593,3 +593,21 @@
   - durable replay across runtime restart
   - registry sync / remote tool mirroring
   - REST approval endpoints for offline approvers
+
+### 2026-03-10 update — concrete demo narrative
+- Wrote `docs/demo-run-of-show.md` as a specific presenter runbook instead of a generic outline.
+- Chosen story:
+  - workspace: `bp-ig-fix`
+  - namespace: `acme`
+  - repo/template: `acme-rpm-ig`
+  - topic: `bp-panel-validator`
+  - browser participant: Priya Shah
+  - CLI participant: Marco Ruiz
+- The narrative now uses one believable FHIR standards task end to end:
+  - Shelley runs a local `fhir-validator` tool against `input/fsh/BloodPressurePanel.fsh`
+  - the validator reports a concrete missing-slicing error on `Observation.component`
+  - a late CLI joiner catches up and uses MCP stdio `hl7-jira`
+  - Shelley adds explicit FSH slicing declarations, re-runs validation, then pauses on an approval-required `publish-preview`
+- Also tightened `0003-workspace-tool-api-payloads.md` so the nested `tools` array is described as MCP-native tool definition objects rather than an ad hoc hosted action schema.
+- Practical goal:
+  - the demo document is now specific enough to drive fixture building, UI polish, and presenter rehearsal without inventing the story live on stage.

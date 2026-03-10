@@ -11,10 +11,37 @@ It defines:
 - exact payloads for `POST /tools`, `GET /tools`, and `GET /tools/{tool}`
 - exact payloads for grant creation
 - the canonical MCP transport shapes for `stdio` and `streamable_http`
-- how shorthand `actions` and rich `actionDefs` relate
+- how hosted workspace registration relates to native MCP tool definitions
 
 For the demo, the hosted workspace tool API is the source of truth. Remote MCP
 tool discovery is explicitly out of scope.
+
+## Design Principle
+
+The workspace host owns:
+- tool registration
+- transport configuration
+- credential binding
+- grants and approval policy
+
+But the capability surface exposed by an MCP-backed tool should reuse MCP's own
+tool definition shape rather than inventing a parallel schema.
+
+So:
+- hosted workspace API fields are ours
+- the nested MCP `tools` payload should use MCP tool objects directly
+
+For the demo contract, "MCP tool object" means the MCP server tools shape from
+the current MCP tools spec, including:
+- `name`
+- optional `title`
+- optional `description`
+- `inputSchema`
+- optional `outputSchema`
+- optional `annotations`
+
+The current MCP spec also allows fields like `icons`, but those are explicitly
+out of scope for the demo contract.
 
 ## Resource Model
 
@@ -41,37 +68,7 @@ These routes are relative to the workspace runtime base.
 
 ## Tool Create Request
 
-### Required fields
-
 `POST /tools` must accept:
-
-```json
-{
-  "name": "github",
-  "description": "GitHub repository operations",
-  "provider": "alice@acme.com",
-  "protocol": "mcp",
-  "transport": {
-    "type": "stdio",
-    "command": "uvx",
-    "args": ["mcp-server-github"],
-    "env": {}
-  },
-  "actions": ["repo.read", "pr.create"]
-}
-```
-
-Required fields:
-- `name`
-- `protocol`
-- `transport`
-- either `actions` or `actionDefs`
-
-For the demo, `protocol` must be `"mcp"`.
-
-### Rich action form
-
-If richer action metadata is available, clients should send:
 
 ```json
 {
@@ -84,9 +81,10 @@ If richer action metadata is available, clients should send:
     "url": "https://github-mcp.example.com",
     "headers": {}
   },
-  "actionDefs": [
+  "tools": [
     {
       "name": "repo.read",
+      "title": "Read Repository",
       "description": "Read repository metadata and files",
       "inputSchema": {
         "type": "object",
@@ -100,6 +98,7 @@ If richer action metadata is available, clients should send:
     },
     {
       "name": "pr.create",
+      "title": "Create Pull Request",
       "description": "Create a pull request",
       "inputSchema": {
         "type": "object",
@@ -115,14 +114,61 @@ If richer action metadata is available, clients should send:
 }
 ```
 
-Rules:
-- `actions` and `actionDefs` may both be sent, but if both are present they
-  must agree on action names
-- `actionDefs[].name` is required
-- `actionDefs[].inputSchema`, when present, must be a JSON Schema object
-- `description`, `provider`, and `credentialRef` are optional for the demo
+Required fields:
+- `name`
+- `protocol`
+- `transport`
+- `tools`
 
-### Optional fields
+For the demo:
+- `protocol` must be `"mcp"`
+- `tools` must be a non-empty array of MCP tool definition objects
+
+### MCP tool object shape
+
+Each entry in `tools` should use the MCP tool definition shape directly.
+
+For the demo, supported fields are:
+- `name`
+- `title`
+- `description`
+- `inputSchema`
+- optional `outputSchema`
+- optional `annotations`
+
+Example:
+
+```json
+{
+  "name": "repo.read",
+  "title": "Read Repository",
+  "description": "Read repository metadata and files",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "repo": { "type": "string" }
+    },
+    "required": ["repo"],
+    "additionalProperties": false
+  },
+  "outputSchema": {
+    "type": "object"
+  },
+  "annotations": {
+    "readOnlyHint": true
+  }
+}
+```
+
+Rules:
+- `tools[].name` is required
+- `tools[].inputSchema` is required and must be a JSON Schema object
+- if `tools[].inputSchema` omits `$schema`, it is interpreted using MCP's
+  current default JSON Schema dialect
+- additional MCP-defined optional fields may be preserved even if not used by
+  the initial demo UI
+
+### Optional hosted fields
 
 Optional create fields:
 
@@ -205,10 +251,23 @@ The demo contract supports exactly these two MCP transport types.
       "args": ["mcp-server-github"],
       "env": {}
     },
-    "actions": ["repo.read", "pr.create"],
-    "actionDefs": [
-      { "name": "repo.read", "description": "Read repository metadata and files" },
-      { "name": "pr.create", "description": "Create a pull request" }
+    "tools": [
+      {
+        "name": "repo.read",
+        "title": "Read Repository",
+        "description": "Read repository metadata and files",
+        "inputSchema": {
+          "type": "object"
+        }
+      },
+      {
+        "name": "pr.create",
+        "title": "Create Pull Request",
+        "description": "Create a pull request",
+        "inputSchema": {
+          "type": "object"
+        }
+      }
     ],
     "status": "ready",
     "createdAt": "2026-03-10T12:00:00Z"
@@ -232,20 +291,19 @@ The demo contract supports exactly these two MCP transport types.
     "args": ["mcp-server-github"],
     "env": {}
   },
-  "actions": ["repo.read", "pr.create"],
-  "actionDefs": [
+  "tools": [
     {
       "name": "repo.read",
+      "title": "Read Repository",
       "description": "Read repository metadata and files",
       "inputSchema": {
         "type": "object"
-      }
-    },
-    {
-      "name": "pr.create",
-      "description": "Create a pull request",
-      "inputSchema": {
+      },
+      "outputSchema": {
         "type": "object"
+      },
+      "annotations": {
+        "readOnlyHint": true
       }
     }
   ],
@@ -257,7 +315,7 @@ The demo contract supports exactly these two MCP transport types.
     {
       "grantId": "g_123",
       "subject": "agent:*",
-      "actions": ["repo.read"],
+      "tools": ["repo.read"],
       "access": "allowed",
       "approvers": [],
       "scope": {}
@@ -268,9 +326,7 @@ The demo contract supports exactly these two MCP transport types.
 ```
 
 Rules:
-- responses always include both `actions` and `actionDefs`
-- if the request only provided `actions`, the server must synthesize minimal
-  `actionDefs` using those names
+- responses preserve the hosted fields plus the nested MCP tool definitions
 - `status` for the demo may be:
   - `ready`
   - `unreachable`
@@ -283,7 +339,7 @@ Rules:
 ```json
 {
   "subject": "agent:*",
-  "actions": ["repo.read"],
+  "tools": ["repo.read"],
   "access": "allowed",
   "approvers": [],
   "scope": {}
@@ -292,7 +348,7 @@ Rules:
 
 Rules:
 - `subject` is required
-- `actions` must be a non-empty subset of the tool's registered actions
+- `tools` must be a non-empty subset of the registered nested MCP tool names
 - `access` must be one of:
   - `allowed`
   - `approval_required`
@@ -304,7 +360,7 @@ Response shape:
 {
   "grantId": "g_123",
   "subject": "agent:*",
-  "actions": ["repo.read"],
+  "tools": ["repo.read"],
   "access": "allowed",
   "approvers": [],
   "scope": {},
@@ -319,7 +375,7 @@ Response shape:
 This RFC defines the demo guarantee as:
 - hosted REST registration is canonical
 - MCP `stdio` and `streamable_http` are the supported execution transports
-- action metadata is explicit enough to expose useful model-facing tools
+- nested MCP tool definitions are represented using MCP-native schema fields
 - grants and approval policy are configured through the hosted API
 
 ## Non-Goals For This Contract
@@ -327,6 +383,5 @@ This RFC defines the demo guarantee as:
 Explicitly deferred:
 - registry sync or remote tool mirroring
 - opaque `toolId` separate from `name`
-- per-action output schema enforcement
 - secret-management standardization beyond opaque `credentialRef` and transport
   placeholders
