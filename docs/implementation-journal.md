@@ -233,3 +233,39 @@
 - `go test ./db ./server` in `shelley/`
 - `./test/smoke.sh` from the workspace root
   - now includes `POST/GET/DELETE /ws/tools`
+
+### 2026-03-10 update — live workspace tool injection
+- Topic turns now refresh dynamic `workspace_*` tools from the persisted workspace tool/grant tables before each next prompt is handed to Shelley's loop.
+- Added `loop.Loop.SetTools()` and `ConversationManager.SetExtraTools()` so active topic conversations can pick up tool changes on the next turn without restarting the conversation runtime.
+- Current visibility rules:
+  - a workspace tool is only exposed to the LLM when the topic has at least one matching non-denied grant
+  - supported grant subjects today are `agent:*` and `agent:{topic}`
+  - visible actions are limited to the granted subset of the tool's registered actions
+- Execution is still intentionally narrow:
+  - `workspace_*` tools now exist in the LLM tool list and enforce access mode at call time
+  - actual external protocol execution is not implemented yet, so allowed calls currently return a clear "not implemented" tool error
+  - `approval_required` also returns a clear not-yet-implemented error instead of silently allowing the call
+
+### Plan adjustment surfaced by implementation
+- The draft Phase 4 text suggests a `SetSystem()` update path alongside `SetTools()`.
+- In the checked-out Shelley code, the actual system prompt text does not enumerate tool descriptions; tool descriptions live in system-message `display_data` for the UI and in the LLM request tool list itself.
+- Practical result:
+  - `SetTools()` was required for real next-turn behavior
+  - `SetSystem()` is not required yet for correctness
+  - new topic conversations do include workspace tools in their initial system-message display metadata because the extra tools are loaded before first hydrate
+  - existing conversations' persisted system-message display metadata is still not rewritten when tools change
+
+### Surprise caught during this slice
+- My first pass moved topic tool refresh ahead of the point where the topic marked itself busy for a turn.
+- That created a short regression where a second websocket prompt could miss the `queued prompt` system message.
+- Fixed by marking the turn busy before refreshing workspace tools, then aborting the turn cleanly if refresh fails.
+
+### Additional tests added
+- active topic picks up a newly granted workspace tool on the next turn and drops it again after deletion
+- topic-scoped grants (`agent:{topic}`) only expose the tool to the matching topic
+- invalid grant access values are rejected at the REST layer
+
+### Validation update — live workspace tool injection checkpoint
+- `go test ./server -run 'TestWorkspaceTools|TestWorkspaceFiles|TestWorkspace|TestEmitWorkspace'` in `shelley/`
+- `go test ./db ./server` in `shelley/`
+- `./test/smoke.sh` from the workspace root
