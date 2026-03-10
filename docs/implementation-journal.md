@@ -139,3 +139,38 @@
     - Bun `cli.ts` stays connected over websocket
     - Shelley receives `POST /api/conversation/{id}/chat`
     - Bun CLI receives that turn on the same topic
+
+### 2026-03-10 update — durable topic identity
+- Added a real `topics` table:
+  - migration: `db/schema/017-topics.sql`
+  - queries: `db/query/topics.sql`
+- Topic rows now persist `topic_name -> conversation_id` separately from conversation slug overloading.
+- Workspace topic list and lookup now read from persisted topic rows instead of treating every top-level slugged conversation as a topic.
+
+### Runtime recovery and rename coherence
+- Added persisted-topic recovery for the Shelley API bridge:
+  - `POST /api/conversation/{id}/chat` now recreates the topic runtime from the `topics` table after a fresh server instance, then routes through the shared prompt queue.
+- Added topic rename synchronization:
+  - existing conversation rename updates both `conversations.slug` and `topics.topic_name`
+  - active in-memory topic runtime maps are updated to the new topic name as well
+- This prevents the current Shelley UI rename feature from silently breaking workspace topic routing.
+
+### Legacy/backfill note
+- There is still one narrow migration compromise:
+  - older topic-like conversations created before the `topics` table existed are not bulk-backfilled automatically
+  - they are lazily backfilled if accessed through the workspace topic routes by name
+- Reason:
+  - bulk-importing every top-level slugged conversation as a topic would wrongly classify legacy non-workspace conversations
+- Result:
+  - new topics now have durable identity immediately
+  - historical pre-table topics need one workspace-route touch before restart-safe recovery exists
+
+### Additional tests added
+- workspace topics no longer list arbitrary legacy slugged conversations
+- topic-backed API chat restores runtime from persisted topic metadata after a fresh server instance
+- renaming a topic-backed conversation preserves workspace topic routing
+
+### Validation update — durable topic checkpoint
+- `go test ./server -run 'TestWorkspace|TestEmitWorkspace'` in `shelley/`
+- `go test ./db ./server` in `shelley/`
+- `./test/smoke.sh` from the workspace root
