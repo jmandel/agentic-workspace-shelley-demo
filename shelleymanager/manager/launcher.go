@@ -24,12 +24,14 @@ const (
 	bwrapSandboxWorkspace = "/sandbox/workspace"
 	bwrapSandboxDB        = "/sandbox/shelley.db"
 	bwrapSandboxHome      = "/sandbox/home"
+	runtimeSharedToolsDir = "/tools"
 )
 
 type CommandLauncher struct {
 	Mode            string
 	StateRoot       string
 	ShelleyBinary   string
+	SharedToolsDir  string
 	DockerBinary    string
 	DockerImage     string
 	DockerCommand   string
@@ -82,6 +84,9 @@ func (l CommandLauncher) Launch(ctx context.Context, spec LaunchSpec) (*Runtime,
 		return nil, err
 	}
 	if err := os.MkdirAll(filepath.Join(spec.StateDir, "home"), 0o755); err != nil {
+		return nil, err
+	}
+	if _, err := l.normalizedSharedToolsDir(); err != nil {
 		return nil, err
 	}
 	if mode == "bwrap" {
@@ -171,7 +176,7 @@ func (l CommandLauncher) buildProcessCommand(spec LaunchSpec, hostPort int) (*ex
 	}
 	args := l.shelleyArgs(spec.DBPath, spec.WorkspaceDir, hostPort, l.ConfigPath)
 	cmd := exec.Command(l.ShelleyBinary, args...)
-	cmd.Env = append(os.Environ(), "WORKSPACE_NAME="+spec.Name)
+	cmd.Env = l.runtimeEnv(os.Environ(), spec.Name, false)
 	return cmd, nil
 }
 
@@ -199,8 +204,14 @@ func (l CommandLauncher) buildDockerCommand(spec LaunchSpec, hostPort int) (*exe
 		"-v", spec.StateDir + ":" + containerState,
 		"-v", spec.WorkspaceDir + ":" + containerWorkspace,
 		"-w", containerWorkspace,
-		image,
 	}
+	if sharedToolsDir, err := l.normalizedSharedToolsDir(); err != nil {
+		return nil, err
+	} else if sharedToolsDir != "" {
+		args = append(args, "-e", "WORKSPACE_TOOLS_DIR="+runtimeSharedToolsDir)
+		args = append(args, "-v", sharedToolsDir+":"+runtimeSharedToolsDir+":ro")
+	}
+	args = append(args, image)
 	if entrypoint != "" {
 		args = append(args, entrypoint)
 	}
@@ -233,9 +244,14 @@ func (l CommandLauncher) buildBwrapCommand(spec LaunchSpec, hostPort int) (*exec
 		"--setenv", "WORKSPACE_NAME", spec.Name,
 		"--setenv", "HOME", bwrapSandboxHome,
 		"--setenv", "TMPDIR", "/tmp",
-		"--",
-		bwrapSandboxBinary,
 	)
+	if sharedToolsDir, err := l.normalizedSharedToolsDir(); err != nil {
+		return nil, err
+	} else if sharedToolsDir != "" {
+		args = append(args, "--ro-bind", sharedToolsDir, runtimeSharedToolsDir)
+		args = append(args, "--setenv", "WORKSPACE_TOOLS_DIR", runtimeSharedToolsDir)
+	}
+	args = append(args, "--", bwrapSandboxBinary)
 	args = append(args, l.shelleyArgs(bwrapSandboxDB, bwrapSandboxWorkspace, hostPort, l.bwrapConfigPath(spec))...)
 	return exec.Command(bwrap, args...), nil
 }
@@ -383,6 +399,38 @@ func (l CommandLauncher) bwrapRuntimeFSArgs(spec LaunchSpec) []string {
 		}
 	}
 	return args
+}
+
+func (l CommandLauncher) normalizedSharedToolsDir() (string, error) {
+	raw := strings.TrimSpace(l.SharedToolsDir)
+	if raw == "" {
+		return "", nil
+	}
+	abs, err := filepath.Abs(raw)
+	if err != nil {
+		return "", fmt.Errorf("resolve shared tools dir: %w", err)
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return "", fmt.Errorf("shared tools dir %q: %w", abs, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("shared tools dir %q is not a directory", abs)
+	}
+	return abs, nil
+}
+
+func (l CommandLauncher) runtimeEnv(base []string, workspaceName string, sandboxed bool) []string {
+	env := append([]string{}, base...)
+	env = append(env, "WORKSPACE_NAME="+workspaceName)
+	toolsDir, err := l.normalizedSharedToolsDir()
+	if err != nil || toolsDir == "" {
+		return env
+	}
+	if sandboxed {
+		toolsDir = runtimeSharedToolsDir
+	}
+	return append(env, "WORKSPACE_TOOLS_DIR="+toolsDir)
 }
 
 func (l CommandLauncher) bwrapConfigPath(spec LaunchSpec) string {

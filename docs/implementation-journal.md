@@ -611,3 +611,23 @@
 - Also tightened `0003-workspace-tool-api-payloads.md` so the nested `tools` array is described as MCP-native tool definition objects rather than an ad hoc hosted action schema.
 - Practical goal:
   - the demo document is now specific enough to drive fixture building, UI polish, and presenter rehearsal without inventing the story live on stage.
+
+### 2026-03-10 update — shared tools mount for isolated runtimes
+- Added first-class manager support for an optional shared host tools directory.
+- New launcher behavior:
+  - `shelleymanager` accepts `-tools-dir <host-path>`
+  - `process` runtimes inherit `WORKSPACE_TOOLS_DIR=<host-path>`
+  - `docker` runtimes mount that host path read-only at `/tools` and inherit `WORKSPACE_TOOLS_DIR=/tools`
+  - `bwrap` runtimes `--ro-bind` that host path at `/tools` and inherit `WORKSPACE_TOOLS_DIR=/tools`
+- Purpose:
+  - avoid baking demo tools into workspace creation time
+  - give isolated workspaces a stable shared location for items like:
+    - FHIR Validator JAR wrapper
+    - Bun binary
+    - HL7 Jira MCP fixture app
+- Validation:
+  - `cd shelleymanager && go test ./...`
+  - `./test/smoke.sh`
+- This surfaced one remaining demo gap clearly:
+  - the manager/runtime filesystem path is now straightforward, but Shelley still only executes workspace tools through the `mcp` protocol
+  - the demo's `fhir-validator` story therefore still needs a local executable tool path, likely an `exec`-style workspace tool protocol, rather than only more launcher work

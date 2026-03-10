@@ -23,6 +23,7 @@ func main() {
 		StateDir        string
 		RuntimeMode     string
 		ShelleyBinary   string
+		SharedToolsDir  string
 		DockerBinary    string
 		DockerImage     string
 		DockerCommand   string
@@ -39,6 +40,7 @@ func main() {
 	flag.StringVar(&cfg.StateDir, "state-dir", ".shelleymanager-state", "State root for manager metadata, logs, and runtime workspace dirs")
 	flag.StringVar(&cfg.RuntimeMode, "runtime-mode", "process", "Runtime launch mode: process, docker, or bwrap")
 	flag.StringVar(&cfg.ShelleyBinary, "shelley-binary", "", "Path to Shelley binary for process/bwrap launch modes")
+	flag.StringVar(&cfg.SharedToolsDir, "tools-dir", "", "Optional shared host tools dir mounted read-only into runtimes at /tools")
 	flag.StringVar(&cfg.DockerBinary, "docker-binary", "docker", "Docker CLI binary")
 	flag.StringVar(&cfg.DockerImage, "docker-image", "", "Shelley runtime image for docker mode")
 	flag.StringVar(&cfg.DockerCommand, "docker-command", "shelley", "Command inside the docker image that starts Shelley")
@@ -59,6 +61,7 @@ func main() {
 		Mode:            cfg.RuntimeMode,
 		StateRoot:       cfg.StateDir,
 		ShelleyBinary:   cfg.ShelleyBinary,
+		SharedToolsDir:  cfg.SharedToolsDir,
 		DockerBinary:    cfg.DockerBinary,
 		DockerImage:     cfg.DockerImage,
 		DockerCommand:   cfg.DockerCommand,
