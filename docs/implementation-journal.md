@@ -185,3 +185,27 @@
 ### Validation update — mixed-stream checkpoint
 - `go test ./server -run 'TestWorkspace|TestEmitWorkspace'` in `shelley/`
 - `go test ./server` in `shelley/`
+
+### 2026-03-10 update — workspace file endpoints
+- Added workspace file routes rooted at the Shelley server process working directory for now:
+  - `GET /ws/files`
+  - `GET /ws/files/{path...}`
+  - `PUT /ws/files/{path...}`
+  - `DELETE /ws/files/{path...}`
+- Implemented:
+  - file read
+  - file write with parent directory creation
+  - file/directory delete
+  - directory listing for root or any directory path
+- Added path-safety checks so `..` segments are rejected instead of silently normalized.
+
+### File endpoint design compromise
+- The draft plan assumes a future `--workspace-dir` flag. The checked-out Shelley CLI still does not have that flag.
+- For this checkpoint, workspace file APIs use the server process cwd as `workspaceRoot`.
+- This keeps the implementation real and testable now, while leaving a clean seam to switch to `--workspace-dir` later.
+
+### Validation update — file endpoint checkpoint
+- `go test ./server -run 'TestWorkspaceFiles|TestWorkspace|TestEmitWorkspace'` in `shelley/`
+- `go test ./server` in `shelley/`
+- `./test/smoke.sh` from the workspace root
+  - now includes `PUT/GET/DELETE /ws/files/...` plus directory listing

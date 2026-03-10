@@ -8,6 +8,8 @@ TMPDIR="$(mktemp -d)"
 PORT_FILE="$TMPDIR/port"
 WORKSPACE_NAME="smoke-workspace"
 RESPONSE_TEXT="workspace-smoke-response-123"
+FILE_DIR=".workspace-smoke-$RANDOM"
+FILE_PATH="$FILE_DIR/note.txt"
 SERVER_PID=""
 CLI_PID=""
 CLI_BUFFER=""
@@ -126,6 +128,17 @@ require_output "$WORKSPACES_JSON" "$WORKSPACE_NAME" "GET /workspaces exposes the
 
 HEALTH_JSON="$(curl -sf "http://localhost:$PORT/ws/health")"
 require_output "$HEALTH_JSON" '"mode":"workspace"' "GET /ws/health reports workspace mode"
+
+log "Checking workspace file endpoints"
+curl -sf -X PUT --data-binary 'workspace file body' "http://localhost:$PORT/ws/files/$FILE_PATH" >/dev/null
+FILE_BODY="$(curl -sf "http://localhost:$PORT/ws/files/$FILE_PATH")"
+require_output "$FILE_BODY" "workspace file body" "GET /ws/files/{path} reads file content"
+
+DIR_JSON="$(curl -sf "http://localhost:$PORT/ws/files/$FILE_DIR")"
+require_output "$DIR_JSON" "$FILE_PATH" "GET /ws/files/{path} lists directories"
+
+curl -sf -X DELETE "http://localhost:$PORT/ws/files/$FILE_PATH" >/dev/null
+curl -sf -X DELETE "http://localhost:$PORT/ws/files/$FILE_DIR" >/dev/null
 
 log "Running real Bun CLI against Shelley"
 (
