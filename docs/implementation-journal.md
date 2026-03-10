@@ -798,3 +798,63 @@
   - queue state should be visible over both websocket and REST
   - reconnecting clients should receive a `queue_snapshot`
   - callers should be able to cancel or clear their own queued prompts while they remain queued
+
+### 2026-03-10 update — queue RFC implemented in Shelley and the Bun CLI
+- Shelley topic runtimes now expose prompt queue state as a real public surface instead of an internal FIFO plus the old `queued prompt` system text.
+- Runtime-side changes:
+  - queued prompts now have stable `promptId`
+  - topics emit `prompt_status` lifecycle events for `accepted`, `queued`, `started`, `completed`, `cancelled`, and `failed`
+  - websocket connect now emits `queue_snapshot`
+  - queued prompts can be removed before start through:
+    - websocket `cancel_prompt`
+    - `DELETE /topics/{topic}/queue/{promptId}`
+    - `POST /topics/{topic}/queue:clear-mine`
+  - queue ownership currently uses a lightweight requester identity placeholder:
+    - websocket `client_id` query parameter
+    - REST `X-Workspace-Client-ID` header
+  - this is intentionally a prototype auth context, not the final security model
+- Bun CLI changes:
+  - `connect` now uses a stable per-process participant id and sends explicit `promptId`
+  - CLI prints queue lifecycle and queue snapshots
+  - added `queue` and `clear-queue` commands
+  - interactive `/queue`, `/cancel <promptId|last>`, `/clear`, and `/whoami` are now available while connected
+- Lightweight manager topic page changes:
+  - browser websocket connections now also carry a stable participant id
+  - browser prompt sends now include explicit `promptId`
+  - queue events no longer fall through as raw unknown-event output
+
+### Validation update — queue implementation
+- Shelley focused queue tests:
+  - `go test ./server -run 'TestWorkspaceTopicWSQueuesPrompt|TestWorkspaceTopicQueueRESTAndCancellation|TestWorkspaceTopicAPIChatUsesTopicQueue|TestWorkspaceTopicWSReplaysRecentMessagesOnConnect' -v`
+- Full Shelley server suite:
+  - `go test ./server`
+- Full manager suite:
+  - `cd shelleymanager && go test ./...`
+- Full smoke in process mode:
+  - `./test/smoke.sh`
+- Full smoke in `bwrap` mode:
+  - `SMOKE_RUNTIME_MODE=bwrap ./test/smoke.sh`
+- New smoke coverage now explicitly proves:
+  - second prompt becomes queued behind an active turn
+  - `GET /topics/{topic}/queue` shows active and queued prompt ids
+  - `ws queue` surfaces that queue state in the Bun CLI
+  - `DELETE /queue/{promptId}` removes the queued prompt through the public manager path
+
+### 2026-03-10 update — root repo now uses real submodules
+- Created/published GitHub targets under the `jmandel` account:
+  - `jmandel/shelley` already existed as a fork
+  - created `jmandel/agentic-workspace` as a fork
+  - created `jmandel/workspace-protocol` for this root project
+- Pushed branch `workspace-protocol-queue-demo` to:
+  - `jmandel/shelley`
+  - `jmandel/agentic-workspace`
+- Converted the root repo to proper submodules:
+  - `shelley` now points at `https://github.com/jmandel/shelley.git`
+  - `agentic-workspace` now points at `https://github.com/jmandel/agentic-workspace.git`
+- Added a root `.gitignore` for local demo artifacts so the root repo only tracks the real project state.
+
+### Remaining demo follow-up
+- Extend the predictable model so demo prompts can deterministically trigger:
+  - local `bash` flows that exercise mounted FHIR tooling
+  - MCP tool calls such as the HL7 Jira fixture
+- The goal is to make the live demo show real tool traffic without depending on a non-deterministic model.

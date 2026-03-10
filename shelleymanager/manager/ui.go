@@ -430,10 +430,17 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
     const statusEl = document.getElementById('status');
     const wsPath = document.body.dataset.wsPath;
     const wsScheme = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
-    const wsURL = wsScheme + window.location.host + wsPath;
+    const participantKey = 'workspace-participant-id';
+    let participantId = localStorage.getItem(participantKey);
+    if (!participantId) {
+      participantId = 'web-' + Math.random().toString(36).slice(2, 10);
+      localStorage.setItem(participantKey, participantId);
+    }
+    const wsURL = wsScheme + window.location.host + wsPath + '?client_id=' + encodeURIComponent(participantId);
     const conn = new WebSocket(wsURL);
     let wsOpened = false;
     let wsFailureShown = false;
+    let promptCounter = 0;
 
     function appendMessage(kind, title, body) {
       const div = document.createElement('div');
@@ -482,7 +489,16 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
           appendMessage('system', 'Connected', 'Session <code>' + msg.sessionId + '</code>');
           break;
         case 'prompt_status':
-          appendMessage('system', 'Prompt Status', '' + msg.status);
+          appendMessage('system', 'Prompt Status', (msg.promptId || 'prompt') + ' ' + (msg.status || '') + (msg.position ? ' (#' + msg.position + ')' : ''));
+          break;
+        case 'queue_snapshot':
+          appendMessage('system', 'Queue', 'active=' + (msg.activePromptId || 'none') + ', queued=' + ((msg.entries || []).length));
+          break;
+        case 'queue_entry_removed':
+          appendMessage('system', 'Queue', 'removed ' + (msg.promptId || '') + (msg.reason ? ' (' + msg.reason + ')' : ''));
+          break;
+        case 'queue_cleared':
+          appendMessage('system', 'Queue', 'cleared ' + ((msg.removed || []).join(', ') || 'no prompts'));
           break;
         case 'user':
           appendMessage('system', 'User', msg.data || '');
@@ -519,7 +535,8 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
         showConnectionFailure('Cannot send a prompt because the realtime connection is not open.');
         return;
       }
-      conn.send(JSON.stringify({type: 'prompt', data: text}));
+      promptCounter += 1;
+      conn.send(JSON.stringify({type: 'prompt', promptId: 'p_' + participantId + '_' + promptCounter, data: text}));
       input.value = '';
     });
 

@@ -297,6 +297,53 @@ CLI_TOPICS_OUTPUT="$(
 )"
 require_output "$CLI_TOPICS_OUTPUT" "$TOPIC_NAME" "cli.ts topics lists the connected topic"
 
+log "Checking prompt queueing through the public manager routes"
+QUEUE_WS_OUTPUT="$(
+  bun -e '
+    const ws = new WebSocket("ws://127.0.0.1:'"$PORT"'/acp/'"$MANAGER_NAMESPACE"'/'"$WORKSPACE_NAME"'/topics/'"$TOPIC_NAME"'?client_id=queue-smoke");
+    const seen = [];
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ type: "prompt", promptId: "p-smoke-1", data: "echo: smoke queue first" }));
+      ws.send(JSON.stringify({ type: "prompt", promptId: "p-smoke-2", data: "echo: smoke queue second" }));
+    };
+    ws.onmessage = (event) => {
+      const msg = JSON.parse(event.data);
+      seen.push(msg);
+      if (msg.type === "prompt_status" && msg.promptId === "p-smoke-2" && msg.status === "queued") {
+        console.log(JSON.stringify(seen));
+        process.exit(0);
+      }
+    };
+    setTimeout(() => {
+      console.log(JSON.stringify(seen));
+      process.exit(2);
+    }, 4000);
+  '
+)"
+require_output "$QUEUE_WS_OUTPUT" '"promptId":"p-smoke-2"' "topic websocket emits a prompt id for the queued prompt"
+require_output "$QUEUE_WS_OUTPUT" '"status":"queued"' "second prompt is explicitly queued while the first turn is active"
+
+QUEUE_JSON="$(curl -sf -H 'X-Workspace-Client-ID: queue-smoke' "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/topics/$TOPIC_NAME/queue")"
+require_output "$QUEUE_JSON" '"activePromptId":"p-smoke-1"' "GET /topics/{topic}/queue shows the active prompt"
+require_output "$QUEUE_JSON" '"promptId":"p-smoke-2"' "GET /topics/{topic}/queue lists the queued prompt"
+
+CLI_QUEUE_OUTPUT="$(
+  cd "$AW_DIR"
+  WS_MANAGER="http://localhost:$PORT" WS_CLIENT_ID="queue-smoke" bun run cli.ts queue "$WORKSPACE_NAME" "$TOPIC_NAME"
+)"
+require_output "$CLI_QUEUE_OUTPUT" "active=p-smoke-1" "cli.ts queue reports the active prompt"
+require_output "$CLI_QUEUE_OUTPUT" "p-smoke-2 queued" "cli.ts queue reports the queued prompt"
+
+curl -sf -X DELETE -H 'X-Workspace-Client-ID: queue-smoke' \
+  "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/topics/$TOPIC_NAME/queue/p-smoke-2" >/dev/null
+QUEUE_AFTER_CANCEL="$(curl -sf -H 'X-Workspace-Client-ID: queue-smoke' "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/topics/$TOPIC_NAME/queue")"
+if [[ "$QUEUE_AFTER_CANCEL" == *'"promptId":"p-smoke-2"'* ]]; then
+  printf '  ✗ queued prompt still present after DELETE /queue/{promptId}\n'
+  printf '    queue body:\n%s\n' "$QUEUE_AFTER_CANCEL"
+  exit 1
+fi
+printf '  ✓ DELETE /queue/{promptId} removes the queued prompt through the manager\n'
+
 if [[ "$RUNTIME_MODE" == "bwrap" ]]; then
   log "Checking bwrap filesystem isolation"
   if [[ ! -f "$WORKSPACE_ROOT/bwrap-inside.txt" ]]; then
