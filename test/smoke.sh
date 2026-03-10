@@ -138,6 +138,22 @@ log "Running real Bun CLI against Shelley"
   printf 'echo: %s\n' "$RESPONSE_TEXT" >&3
   read_cli_until "thinking..." "cli.ts saw live workspace system update"
   read_cli_until "$RESPONSE_TEXT" "cli.ts received agent response"
+
+  TOPIC_JSON="$(curl -sf "http://localhost:$PORT/ws/topics/smoke-topic")"
+  SESSION_ID="$(printf '%s' "$TOPIC_JSON" | sed -n 's/.*"sessionId":"\([^\"]*\)".*/\1/p')"
+  if [[ -z "$SESSION_ID" ]]; then
+    printf '  ✗ failed to extract topic session id from /ws/topics/smoke-topic\n'
+    printf '    response: %s\n' "$TOPIC_JSON"
+    exit 1
+  fi
+
+  curl -sf \
+    -X POST \
+    -H 'Content-Type: application/json' \
+    -d '{"message":"echo: api-mixed-client-456","model":"predictable"}' \
+    "http://localhost:$PORT/api/conversation/$SESSION_ID/chat" >/dev/null
+  read_cli_until "api-mixed-client-456" "api chat is broadcast to websocket clients on the same topic"
+
   printf '/quit\n' >&3
   read_cli_until "Disconnected." "cli.ts disconnected cleanly"
   exec 3>&-

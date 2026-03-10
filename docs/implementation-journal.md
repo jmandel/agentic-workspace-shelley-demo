@@ -92,3 +92,50 @@
 
 ### Environment notes
 - `pnpm` was not on `PATH` in this environment, but `corepack` was present. Used `corepack pnpm ...` rather than changing global tooling.
+
+### 2026-03-10 update — topic runtime refactor
+- Refactored the workspace websocket path onto explicit topic runtime pieces:
+  - `server/topic.go`
+  - `server/prompt_queue.go`
+  - `server/ws_hub.go`
+- The websocket handler now attaches clients to a shared per-topic `WSHub` and enqueues prompts onto a per-topic `PromptQueue` instead of creating a fresh `subpub` subscription and direct `AcceptUserMessage` path per connection.
+- Topic busy state now includes queued work, not just `ConversationManager.agentWorking`.
+- Archiving a topic now tears down the topic runtime and disconnects attached websocket clients via the hub.
+
+### Queueing behavior change
+- The refactor intentionally tightened prompt handling relative to the first adapter slice.
+- Before this refactor, two prompts arriving close together could still batch into one next LLM request because Shelley accepted them directly into the conversation loop.
+- After the new `PromptQueue` drainer, queued prompts are now processed as separate turns in order.
+- Updated the websocket queue test to assert the stronger behavior: two prompts produce two LLM requests, preserving order.
+
+### Phase 2 bridge
+- Re-read the updated Phase 2 plan and implemented the feasible slice that matches the checked-out code today:
+  - `POST /api/conversation/{id}/chat` now routes through the topic prompt queue when the conversation is already backed by an active topic runtime in `TopicManager`.
+  - This gives Shelley's existing REST chat path and external websocket clients one shared serialized prompt path for active topics.
+- Added a mixed-path test:
+  - create topic
+  - connect websocket client
+  - send prompt through Shelley REST chat endpoint
+  - verify websocket client receives the turn and the predictable model saw the prompt
+
+### New plan drift found while re-reading
+- The newer draft plan is ahead of the checked-out code in several places:
+  - it assumes a future `topics` table that does not exist yet
+  - it assumes a `--workspace-dir` mode flag that does not exist yet in the checked-out Shelley CLI
+  - it assumes `/ws/tools` and later workspace REST surfaces that are not implemented yet
+- Because there is still no first-class persisted topic table, the new REST chat bridge only applies when a topic runtime already exists in memory.
+- Practical consequence:
+  - browser + CLI sharing works for topics created or joined through the current workspace routes
+  - opening an old topic-like conversation after a cold restart does not yet auto-recreate topic runtime purely from durable metadata
+- I treated this as a design gap to note, not a reason to force the draft's future schema into the current phase.
+
+### Validation update
+- `go test ./server -run 'TestWorkspace|TestEmitWorkspace'` in `shelley/`
+- `go test ./server` in `shelley/`
+- `corepack pnpm install --frozen-lockfile` in `shelley/ui/`
+- `corepack pnpm run type-check` in `shelley/ui/`
+- `./test/smoke.sh` from the workspace root
+  - extended to prove the Phase 2 bridge in a live cross-repo path:
+    - Bun `cli.ts` stays connected over websocket
+    - Shelley receives `POST /api/conversation/{id}/chat`
+    - Bun CLI receives that turn on the same topic
