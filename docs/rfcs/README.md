@@ -13,3 +13,4 @@ Current RFCs:
 - [0003-workspace-tool-api-payloads.md](./0003-workspace-tool-api-payloads.md)
 - [0004-approval-workflow-semantics.md](./0004-approval-workflow-semantics.md)
 - [0005-local-tool-catalog.md](./0005-local-tool-catalog.md)
+- [0006-topic-prompt-queue-management.md](./0006-topic-prompt-queue-management.md)

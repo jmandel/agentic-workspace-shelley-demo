@@ -787,3 +787,14 @@
 - Confirmed the manager can be launched on a fixed port for the manual demo:
   - `shelleymanager -listen 127.0.0.1:31337 ...`
   - the random-port mode is optional, not required
+
+### 2026-03-10 update — new RFC for collaborative queued prompts
+- Added `docs/rfcs/0006-topic-prompt-queue-management.md`.
+- Reason:
+  - the live demo clarified that simple serialized prompt queuing is better than hard mutex or prompt dropping, but still not good enough if queued work is invisible and not cancellable
+  - we want submitters to be able to inspect and remove their own queued prompts before execution starts
+- The RFC takes the position that:
+  - each submitted prompt becomes an explicit queue entry with stable `promptId`
+  - queue state should be visible over both websocket and REST
+  - reconnecting clients should receive a `queue_snapshot`
+  - callers should be able to cancel or clear their own queued prompts while they remain queued
