@@ -10,6 +10,7 @@ WORKSPACE_NAME="smoke-workspace"
 RESPONSE_TEXT="workspace-smoke-response-123"
 FILE_DIR=".workspace-smoke-$RANDOM"
 FILE_PATH="$FILE_DIR/note.txt"
+TOOL_NAME="smoke-tool-$RANDOM"
 SERVER_PID=""
 CLI_PID=""
 CLI_BUFFER=""
@@ -139,6 +140,17 @@ require_output "$DIR_JSON" "$FILE_PATH" "GET /ws/files/{path} lists directories"
 
 curl -sf -X DELETE "http://localhost:$PORT/ws/files/$FILE_PATH" >/dev/null
 curl -sf -X DELETE "http://localhost:$PORT/ws/files/$FILE_DIR" >/dev/null
+
+log "Checking workspace tool endpoints"
+TOOL_JSON="$(curl -sf -X POST "http://localhost:$PORT/ws/tools" \
+  -H 'Content-Type: application/json' \
+  -d "{\"name\":\"$TOOL_NAME\",\"description\":\"smoke tool\",\"actions\":[\"read\"],\"provider\":\"smoke\"}")"
+require_output "$TOOL_JSON" "$TOOL_NAME" "POST /ws/tools creates a workspace tool"
+
+TOOLS_JSON="$(curl -sf "http://localhost:$PORT/ws/tools")"
+require_output "$TOOLS_JSON" "$TOOL_NAME" "GET /ws/tools lists the created tool"
+
+curl -sf -X DELETE "http://localhost:$PORT/ws/tools/$TOOL_NAME" >/dev/null
 
 log "Running real Bun CLI against Shelley"
 (

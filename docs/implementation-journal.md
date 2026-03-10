@@ -209,3 +209,27 @@
 - `go test ./server` in `shelley/`
 - `./test/smoke.sh` from the workspace root
   - now includes `PUT/GET/DELETE /ws/files/...` plus directory listing
+
+### 2026-03-10 update — workspace tool metadata APIs
+- Added persisted workspace tool and grant tables:
+  - `db/schema/018-workspace-tools.sql`
+  - `db/query/workspace_tools.sql`
+- Added `/ws/tools` REST handlers for:
+  - listing tools
+  - creating tools
+  - fetching one tool with its grants
+  - deleting tools
+  - creating grants
+  - deleting grants
+- Added focused server tests covering tool lifecycle and duplicate-name rejection.
+
+### Tool API scope note
+- This checkpoint is metadata and policy storage only.
+- Connected tools are now durable and queryable through the workspace REST surface, but they are not yet injected into Shelley's live per-topic tool sets.
+- Approval workflow and audit logging are also still future work; the current implementation stops at persisted tool/grant CRUD.
+
+### Validation update — workspace tool metadata checkpoint
+- `go test ./server -run 'TestWorkspaceTools|TestWorkspaceFiles|TestWorkspace|TestEmitWorkspace'` in `shelley/`
+- `go test ./db ./server` in `shelley/`
+- `./test/smoke.sh` from the workspace root
+  - now includes `POST/GET/DELETE /ws/tools`
