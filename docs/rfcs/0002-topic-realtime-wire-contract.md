@@ -47,11 +47,16 @@ The minimal canonical client message set is:
 
 ```json
 { "type": "prompt", "promptId": "p_123", "data": "your message here" }
-{ "type": "approval_response", "approvalId": "a_123", "approved": true, "approver": "alice@acme.com" }
+{ "type": "approval_response", "approvalId": "a_123", "approved": true, "reason": "Reviewed and approved" }
 ```
 
 `promptId` should be client-generated or server-assigned, but it must become a
 stable handle for prompt lifecycle events.
+
+Approval identity must come from the authenticated connection context, not from
+an inline client-declared `approver` field. The runtime binds the approval
+response to the authenticated participant and emits that identity in subsequent
+server-originated events and audit records.
 
 ### Server to client messages
 
@@ -66,6 +71,7 @@ The canonical server message set is:
 { "type": "tool_call", "toolCallId": "...", "title": "Read", "status": "pending" }
 { "type": "tool_update", "toolCallId": "...", "status": "completed" }
 { "type": "approval_request", "approvalId": "a_123", "tool": "github", "action": "repo.push" }
+{ "type": "approval_decision", "approvalId": "a_123", "approved": true, "approver": "alice@acme.com" }
 { "type": "done" }
 { "type": "error", "data": "error message" }
 { "type": "system", "data": "human-readable informational text" }
@@ -75,6 +81,8 @@ Notes:
 - `system` remains allowed, but it is no longer the only carrier for meaningful
   state transitions like queueing
 - `approval_request` is promoted to a first-class message
+- `approval_decision` is emitted by the runtime after it binds the decision to
+  the authenticated actor
 - `done` terminates one prompt turn, not the websocket session
 
 ### Event envelope

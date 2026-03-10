@@ -68,12 +68,15 @@ A participant resolves the request with:
   "type": "approval_response",
   "approvalId": "a_123",
   "approved": true,
-  "approver": "alice@acme.com",
   "reason": "Reviewed and approved"
 }
 ```
 
 `toolCallId` should not be reused as the primary approval identifier.
+
+The client should not self-declare the approver identity in the message body.
+The runtime must derive the actor from the authenticated REST or websocket
+connection that submitted the response.
 
 ### Approval result event
 
@@ -91,6 +94,8 @@ The runtime should emit an explicit approval decision event:
 
 This avoids forcing clients to infer approval outcome only from downstream tool
 events.
+
+`approver` in this event is runtime-asserted identity, not client input.
 
 ### Audit requirement
 
@@ -114,6 +119,7 @@ Costs:
 - adds approval-specific message and log types to the protocol
 - requires runtimes to keep pending approval state, not just immediate
   allow/deny decisions
+- requires a real authenticated principal model for REST and realtime clients
 
 ## Open Questions
 

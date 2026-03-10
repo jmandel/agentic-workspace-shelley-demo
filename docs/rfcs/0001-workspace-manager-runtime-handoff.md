@@ -167,11 +167,44 @@ Detailed runtime endpoints belong on:
 - `POST /workspaces`
 - `GET /workspaces/{name}`
 
+### 6. Security model follows the same split
+
+The control plane and runtime plane may be on different hosts, but they must be
+in the same trust model.
+
+The protocol should assume one of these patterns:
+- the Manager and runtimes share an issuer and runtimes validate bearer tokens
+  directly
+- the Manager returns a runtime-specific connection token or session bundle
+- a gateway terminates auth and forwards trusted identity to the runtime
+
+What should not be required is:
+- all runtime traffic flowing through the Manager just to preserve security
+
+Lifecycle authority still belongs to the Manager:
+- create
+- suspend
+- resume
+- clone
+- terminate
+
+Runtime authority belongs to the runtime host:
+- topic participation
+- file access
+- tool use
+- approval handling
+
+The important requirement is that runtime requests carry authenticated identity
+that the runtime can verify. The Manager may mint or broker that identity, but
+it does not need to proxy every byte of runtime traffic.
+
 ## Why This Works Well
 
 - It matches the real operational split between lifecycle management and
   runtime interaction.
 - It does not force Managers to proxy traffic they do not need to proxy.
+- It keeps security centralized at the identity/trust level without requiring
+  centralized traffic forwarding.
 - It still works for relay-style deployments that do want a single host.
 - It fits Shelley's likely deployment model well: one process per workspace,
   with the Manager simply launching Shelley and returning its runtime address.
@@ -186,6 +219,8 @@ Detailed runtime endpoints belong on:
 3. Define workspace REST routes relative to the returned runtime API base, not
    by assuming they live on the Manager origin.
 4. Keep workspace identity (`id`) distinct from runtime location.
+5. State that runtime authentication must be verifiable by the runtime, whether
+   by shared issuer, delegated token, or trusted gateway.
 
 ## Open Questions
 
@@ -195,3 +230,5 @@ Detailed runtime endpoints belong on:
   runtime features are implemented?
 - Should the runtime REST base be named `api`, `apiBase`, or something more
   explicit like `runtimeApi`?
+- Should the initial spec require a specific auth mechanism for Manager-to-
+  runtime handoff, or only require the separation of concerns?

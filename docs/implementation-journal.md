@@ -480,3 +480,13 @@
   - Manager create/get responses return a handoff object with stable workspace identity plus runtime REST and ACP endpoints
   - runtime REST routes are defined relative to the returned runtime API base instead of being implicitly tied to the Manager host/path space
 - This is a better fit for likely Shelley deployment as well as VM/container-style managers that simply provision a runtime and hand back its address.
+
+### 2026-03-10 update — RFC trust model cleanup
+- Tightened the RFCs around authentication and approval identity after reviewing the control-plane/runtime split more critically.
+- `0001-workspace-manager-runtime-handoff.md` now says the split is compatible with security only if runtime requests carry identity the runtime can verify:
+  - shared issuer / direct token validation
+  - Manager-minted runtime token
+  - or trusted gateway forwarding identity
+- `0002-topic-realtime-wire-contract.md` and `0004-approval-workflow-semantics.md` no longer let clients self-assert `approver` inside `approval_response`.
+  - the client now sends only the decision payload
+  - the runtime binds that decision to the authenticated caller and emits the approver identity only in server-originated events / audit records
