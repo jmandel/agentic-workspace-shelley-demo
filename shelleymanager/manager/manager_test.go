@@ -816,6 +816,9 @@ func TestManagerUIRoutes(t *testing.T) {
 	if !strings.Contains(string(guideBody), "Queueing Trick") || !strings.Contains(string(guideBody), "ws validator") {
 		t.Fatalf("unexpected ws language guide body: %s", guideBody)
 	}
+	if !strings.Contains(string(guideBody), "Whole Demo Commands") {
+		t.Fatalf("expected ws language guide to include concrete demo commands, got %s", guideBody)
+	}
 
 	createRes, err := http.Post(server.URL+"/apis/v1/namespaces/acme/workspaces", "application/json", strings.NewReader(`{"name":"bp-ig-fix","topics":[{"name":"bp-panel-validator"}]}`))
 	if err != nil {
@@ -841,10 +844,16 @@ func TestManagerUIRoutes(t *testing.T) {
 	if !strings.Contains(string(appBody), "Delete Topic") {
 		t.Fatalf("expected app page body to expose topic deletion controls, got %s", appBody)
 	}
-	if !strings.Contains(string(appBody), "Prompt Queue") || !strings.Contains(string(appBody), "Clear My Queue") || !strings.Contains(string(appBody), "Refresh Queue") {
+	if !strings.Contains(string(appBody), "Prompt Queue") || !strings.Contains(string(appBody), "Clear My Queue") {
 		t.Fatalf("expected app page body to expose queue controls, got %s", appBody)
 	}
 	if !strings.Contains(string(appBody), "Participant Name") || !strings.Contains(string(appBody), "Use Name") || !strings.Contains(string(appBody), "WS Language Tutorial") {
 		t.Fatalf("expected app page body to expose participant naming and tutorial controls, got %s", appBody)
+	}
+	if !strings.Contains(string(appBody), ".msg-body { white-space: pre-wrap; }") {
+		t.Fatalf("expected app page body to preserve multiline message rendering, got %s", appBody)
+	}
+	if strings.Contains(string(appBody), "Refresh Queue") {
+		t.Fatalf("expected app page body to avoid a manual refresh queue button, got %s", appBody)
 	}
 }

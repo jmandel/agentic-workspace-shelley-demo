@@ -452,6 +452,7 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
     .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:16px; box-shadow:0 12px 40px rgba(31,36,48,.08); margin-bottom:16px; }
     #messages { min-height: 300px; display:grid; gap:10px; }
     .msg { padding:10px 12px; border-radius:12px; background:#f7f2e8; border:1px solid #ece2d3; }
+    .msg-body { white-space: pre-wrap; }
     .msg.system { background:#eef7f5; }
     .msg.error { background:#fff0f0; }
     .meta { color:var(--muted); font-size:13px; }
@@ -513,7 +514,6 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
             <div class="meta" style="margin-top:8px;">Currently connected as <code id="participant-id"></code></div>
           </div>
           <div class="row">
-            <button id="refresh-queue" type="button" class="secondary">Refresh Queue</button>
             <button id="clear-my-queue" type="button" class="secondary" disabled>Clear My Queue</button>
           </div>
         </div>
@@ -535,10 +535,10 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
     const queueSummaryEl = document.getElementById('queue-summary');
     const queueListEl = document.getElementById('queue-list');
     const clearMyQueueButton = document.getElementById('clear-my-queue');
-    const refreshQueueButton = document.getElementById('refresh-queue');
     const participantIdEl = document.getElementById('participant-id');
     const participantNameInput = document.getElementById('participant-name');
     const saveParticipantButton = document.getElementById('save-participant');
+    const promptInput = document.getElementById('prompt');
     const namespace = document.body.dataset.namespace;
     const workspace = document.body.dataset.workspace;
     const topic = document.body.dataset.topic;
@@ -592,11 +592,11 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
       meta.className = 'meta';
       meta.textContent = title;
       const content = document.createElement('div');
+      content.className = 'msg-body';
       content.textContent = body;
       div.appendChild(meta);
       div.appendChild(content);
       messagesEl.appendChild(div);
-      div.scrollIntoView({behavior:'smooth', block:'end'});
     }
 
     function showConnectionFailure(message) {
@@ -873,8 +873,7 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
 
     document.getElementById('chat-form').addEventListener('submit', (event) => {
       event.preventDefault();
-      const input = document.getElementById('prompt');
-      const text = input.value.trim();
+      const text = promptInput.value.trim();
       if (!text) return;
       if (conn.readyState !== WebSocket.OPEN) {
         showConnectionFailure('Cannot send a prompt because the realtime connection is not open.');
@@ -882,7 +881,8 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
       }
       promptCounter += 1;
       conn.send(JSON.stringify({type: 'prompt', promptId: 'p_web_' + Date.now() + '_' + promptCounter, data: text}));
-      input.value = '';
+      promptInput.value = '';
+      promptInput.focus({preventScroll: true});
     });
 
     saveParticipantButton.addEventListener('click', () => {
@@ -891,14 +891,6 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
       const nextURL = new URL(window.location.href);
       nextURL.searchParams.set('client_id', nextName);
       window.location.href = nextURL.toString();
-    });
-
-    refreshQueueButton.addEventListener('click', async () => {
-      try {
-        await refreshQueue();
-      } catch (err) {
-        appendMessage('error', 'Queue', err.message || String(err));
-      }
     });
 
     clearMyQueueButton.addEventListener('click', async () => {
@@ -1023,6 +1015,26 @@ var wsLanguageTemplate = template.Must(template.New("ws-language").Parse(`<!doct
       <pre>ws jira "Observation.component slicing validator failure" pause1</pre>
       <pre>ws tool hl7-jira action jira.search input '{"query":"validator warning blood pressure slicing"}' aftertext "I found two relevant HL7 Jira threads."</pre>
       <pre>ws bash "sed -n '1,160p' input/fsh/BloodPressurePanel.fsh"</pre>
+    </section>
+
+    <section class="card">
+      <h2>Whole Demo Commands</h2>
+      <pre>1. ws validator "input/fsh/BloodPressurePanel.fsh" toolpause5 aftertext "The validator is pointing at missing slicing metadata on Observation.component."
+2. ws jira "Observation.component slicing validator failure" pause1
+3. ws bash "sed -n '1,200p' input/fsh/BloodPressurePanel.fsh"
+4. ws bash "python - &lt;&lt;'PY'
+from pathlib import Path
+path = Path('input/fsh/BloodPressurePanel.fsh')
+text = path.read_text()
+needle = '* component contains\n'
+insert = '* component ^slicing.discriminator[0].type = #pattern\n* component ^slicing.discriminator[0].path = \"code\"\n* component ^slicing.rules = #open\n'
+if insert not in text:
+    text = text.replace(needle, insert + needle, 1)
+path.write_text(text)
+print('Inserted slicing metadata.')
+PY"
+5. ws validator "input/fsh/BloodPressurePanel.fsh" aftertext "Validation now passes the slicing step."
+6. ws text "Marco, can you review the updated profile before we publish the preview?"</pre>
     </section>
 
     <section class="card">

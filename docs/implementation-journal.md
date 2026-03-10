@@ -976,3 +976,15 @@
   - manager serves the live `ws-language` tutorial route
   - topic page exposes participant naming controls
   - the browser-rendered home page shows the saved participant name
+
+### 2026-03-10 update — browser topic UX cleanup
+- The simple topic page no longer exposes a manual `Refresh Queue` button.
+  Queue state is expected to stay current from the topic websocket plus the
+  initial REST load.
+- The simple topic page no longer calls `scrollIntoView()` for every appended
+  message. That auto-scroll was pulling the viewport upward whenever a prompt
+  was sent or an event arrived because the transcript sits above the composer.
+- The browser message renderer now preserves newlines in message bodies, so
+  multi-line `ws help` output and other scripted demo text render readably.
+- The predictable-model `ws help` output now includes a concrete end-to-end
+  demo command list, not just the tag grammar.
