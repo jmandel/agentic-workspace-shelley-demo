@@ -363,7 +363,7 @@ require_output "$CLI_QUEUE_OUTPUT" "p-smoke-3 queued" "cli.ts queue reports late
 
 QUEUE_PATCH_JSON="$(curl -sf -X PATCH -H 'X-Workspace-Client-ID: queue-smoke' -H 'Content-Type: application/json' \
   "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/topics/$TOPIC_NAME/queue/p-smoke-3" \
-  -d '{"text":"ws text \"smoke queue third edited\""}')"
+  -d '{"data":"ws text \"smoke queue third edited\""}')"
 require_output "$QUEUE_PATCH_JSON" 'smoke queue third edited' "PATCH /queue/{promptId} updates queued prompt text"
 
 QUEUE_MOVE_JSON="$(curl -sf -X POST -H 'X-Workspace-Client-ID: queue-smoke' -H 'Content-Type: application/json' \

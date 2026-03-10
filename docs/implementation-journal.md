@@ -1252,3 +1252,20 @@
   - manager-brokered Bun MCP execution against the real Jira DB
   - queueing, queue edits/moves, and browser queue UI still passing in the same
     smoke run
+
+### 2026-03-10 update — protocol cleanup after queue/injection work
+- Reviewed the `todo.md` cleanup list against the actual Shelley implementation.
+- Most of the listed websocket conformance items were already done in code:
+  - `connected` now includes `protocolVersion` and `replay`
+  - `prompt_status: accepted` now carries submitted prompt `data`
+  - `done` now carries `promptId` and `status`
+  - injected/interrupted flows already exist in both REST and websocket paths
+- Applied the remaining cleanup we actually wanted to keep:
+  - queue edit REST now accepts only `{"data": ...}` on the wire
+  - RFC 0006 now states that queue edit requests use `data`, while queue
+    snapshots/resources still use `text`
+  - the main `agent-workspace.md` route table now uses `{workspace}` instead of
+    `{name}` and explicitly includes `PATCH /workspaces/{workspace}`
+- Validation notes:
+  - focused Shelley queue/inject/interrupt tests passed
+  - the full root smoke passed again after updating its queue-edit request body
