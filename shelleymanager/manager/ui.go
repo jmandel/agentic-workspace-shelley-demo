@@ -35,7 +35,7 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
     @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
   </style>
 </head>
-<body>
+<body data-namespace="{{.Namespace}}">
   <main>
     <div class="card" style="margin-bottom:20px;">
       <h1>Shelley Manager Demo</h1>
@@ -81,16 +81,28 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
     </div>
   </main>
   <script>
-    const namespace = {{printf "%q" .Namespace}};
-    const jiraFixtureScript = {{printf "%q" .JiraScript}};
+    const namespace = document.body.dataset.namespace;
     const apiBase = '/apis/v1/namespaces/' + encodeURIComponent(namespace) + '/workspaces';
     const localToolsEl = document.getElementById('local-tools');
     const workspacesEl = document.getElementById('workspaces');
     const statusEl = document.getElementById('status');
 
+    async function readJSON(res, label) {
+      const text = await res.text();
+      if (!res.ok) {
+        const message = text.trim() || ('HTTP ' + res.status);
+        throw new Error(label + ': ' + res.status + ' ' + message);
+      }
+      try {
+        return text ? JSON.parse(text) : null;
+      } catch (err) {
+        throw new Error(label + ': invalid JSON response: ' + text.slice(0, 120));
+      }
+    }
+
     async function loadLocalTools() {
       const res = await fetch('/apis/v1/local-tools');
-      const tools = await res.json();
+      const tools = await readJSON(res, 'load local tools');
       if (!Array.isArray(tools) || tools.length === 0) {
         localToolsEl.innerHTML = '<p class="muted">No local tools published by this manager.</p>';
         return;
@@ -116,6 +128,7 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
     function workspaceCard(ws) {
       const topic = (ws.topics && ws.topics[0] && ws.topics[0].name) || 'bp-panel-validator';
       const openHref = '/app/' + encodeURIComponent(ws.namespace || namespace) + '/' + encodeURIComponent(ws.name) + '/' + encodeURIComponent(topic);
+      const shelleyHref = '/shelley/' + encodeURIComponent(ws.namespace || namespace) + '/' + encodeURIComponent(ws.name) + '/' + encodeURIComponent(topic);
       const cli = 'WS_MANAGER=' + window.location.origin + ' bun run cli.ts connect ' + ws.name + ' ' + topic;
       const localTools = ws.runtime && ws.runtime.localTools ? ws.runtime.localTools.map(t => '<code>' + t.name + '</code>').join(', ') : '<span class="muted">none</span>';
       return '<div class="workspace">'
@@ -127,6 +140,7 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
         + '<div class="muted">Local tools: ' + localTools + '</div>'
         + '<div class="row" style="margin-top:10px;">'
         + '<a href="' + openHref + '"><button type="button">Open Topic</button></a>'
+        + '<a href="' + shelleyHref + '"><button type="button" class="secondary">Open Shelley UI</button></a>'
         + '</div>'
         + '<pre>' + cli + '</pre>'
         + '</div>';
@@ -134,19 +148,29 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
 
     async function loadWorkspaces() {
       const res = await fetch(apiBase);
-      const workspaces = await res.json();
+      const workspaces = await readJSON(res, 'load workspaces');
       if (!Array.isArray(workspaces) || workspaces.length === 0) {
         workspacesEl.innerHTML = '<p class="muted">No workspaces yet.</p>';
         return;
       }
       const details = await Promise.all(workspaces.map(async ws => {
-        const detailRes = await fetch(apiBase + '/' + encodeURIComponent(ws.name));
-        return detailRes.json();
+        try {
+          const detailRes = await fetch(apiBase + '/' + encodeURIComponent(ws.name));
+          return await readJSON(detailRes, 'load workspace detail for ' + ws.name);
+        } catch (err) {
+          return ws;
+        }
       }));
       workspacesEl.innerHTML = details.map(workspaceCard).join('');
     }
 
     async function registerDemoJiraTool(name) {
+      const fixtureAssetRes = await fetch('/demo-assets/hl7-jira-mcp.js');
+      const jiraFixtureScript = await fixtureAssetRes.text();
+      if (!fixtureAssetRes.ok) {
+        throw new Error('load hl7-jira fixture: ' + fixtureAssetRes.status + ' ' + (jiraFixtureScript.trim() || ''));
+      }
+
       const fixtureRes = await fetch(apiBase + '/' + encodeURIComponent(name) + '/files/.demo/hl7-jira-mcp.js', {
         method: 'PUT',
         headers: {'Content-Type': 'text/plain; charset=utf-8'},
@@ -229,7 +253,6 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
           await registerDemoJiraTool(name);
         }
         statusEl.textContent = 'Workspace created.';
-        await loadWorkspaces();
         window.location.href = '/app/' + encodeURIComponent(namespace) + '/' + encodeURIComponent(name) + '/' + encodeURIComponent(topic);
       } catch (err) {
         statusEl.textContent = err.message || String(err);
@@ -238,8 +261,12 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
 
     document.getElementById('refresh-workspaces').addEventListener('click', async () => {
       statusEl.textContent = 'Refreshing…';
-      await loadWorkspaces();
-      statusEl.textContent = '';
+      try {
+        await loadWorkspaces();
+        statusEl.textContent = '';
+      } catch (err) {
+        statusEl.textContent = err.message || String(err);
+      }
     });
 
     loadLocalTools().then(loadWorkspaces).catch(err => {
@@ -272,7 +299,7 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
     pre { white-space: pre-wrap; background:#f7f2e8; border-radius:12px; padding:12px; overflow:auto; }
   </style>
 </head>
-<body>
+<body data-ws-path="{{.WSPath}}">
   <main>
     <div class="card">
       <div class="row" style="justify-content:space-between;">
@@ -280,7 +307,10 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
           <h1 style="margin:0 0 8px;">{{.Workspace}}</h1>
           <div class="meta">Topic <code>{{.Topic}}</code> · Namespace <code>{{.Namespace}}</code></div>
         </div>
-        <a href="/"><button type="button">Back</button></a>
+        <div class="row">
+          <a href="/shelley/{{.Namespace}}/{{.Workspace}}/{{.Topic}}"><button type="button" class="secondary">Open Shelley UI</button></a>
+          <a href="/"><button type="button">Back</button></a>
+        </div>
       </div>
       <pre>WS_MANAGER={{.Origin}} bun run cli.ts connect {{.Workspace}} {{.Topic}}</pre>
     </div>
@@ -300,13 +330,21 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
   <script>
     const messagesEl = document.getElementById('messages');
     const statusEl = document.getElementById('status');
-    const wsURL = {{printf "%q" .WSURL}};
+    const wsPath = document.body.dataset.wsPath;
+    const wsScheme = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+    const wsURL = wsScheme + window.location.host + wsPath;
     const conn = new WebSocket(wsURL);
 
     function appendMessage(kind, title, body) {
       const div = document.createElement('div');
       div.className = 'msg ' + kind;
-      div.innerHTML = '<div class="meta">' + title + '</div><div>' + body + '</div>';
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = title;
+      const content = document.createElement('div');
+      content.textContent = body;
+      div.appendChild(meta);
+      div.appendChild(content);
       messagesEl.appendChild(div);
       div.scrollIntoView({behavior:'smooth', block:'end'});
     }
@@ -322,6 +360,9 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
           break;
         case 'prompt_status':
           appendMessage('system', 'Prompt Status', '' + msg.status);
+          break;
+        case 'user':
+          appendMessage('system', 'User', msg.data || '');
           break;
         case 'text':
           appendMessage('', 'Assistant', msg.data || '');
@@ -352,7 +393,6 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
       const text = input.value.trim();
       if (!text) return;
       conn.send(JSON.stringify({type: 'prompt', data: text}));
-      appendMessage('system', 'You', text);
       input.value = '';
     });
   </script>
@@ -360,8 +400,7 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
 </html>`))
 
 type homeTemplateData struct {
-	Namespace  string
-	JiraScript string
+	Namespace string
 }
 
 type appTemplateData struct {
@@ -369,7 +408,7 @@ type appTemplateData struct {
 	Workspace string
 	Topic     string
 	Origin    string
-	WSURL     string
+	WSPath    string
 }
 
 func (m *Manager) handleHome(w http.ResponseWriter, r *http.Request) {
@@ -379,9 +418,17 @@ func (m *Manager) handleHome(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = homeTemplate.Execute(w, homeTemplateData{
-		Namespace:  m.defaultNamespace,
-		JiraScript: demoHL7JiraMCPFixtureScript,
+		Namespace: m.defaultNamespace,
 	})
+}
+
+func (m *Manager) handleDemoJiraScript(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = w.Write([]byte(demoHL7JiraMCPFixtureScript))
 }
 
 func (m *Manager) handleApp(w http.ResponseWriter, r *http.Request) {
@@ -404,8 +451,31 @@ func (m *Manager) handleApp(w http.ResponseWriter, r *http.Request) {
 		Workspace: workspace,
 		Topic:     topic,
 		Origin:    requestBase(r, false),
-		WSURL:     requestBase(r, true) + "/acp/" + namespace + "/" + workspace + "/topics/" + topic,
+		WSPath:    "/acp/" + namespace + "/" + workspace + "/topics/" + topic,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = appTemplate.Execute(w, data)
+}
+
+func (m *Manager) handleShelleyUIRedirect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	parts := splitPath(strings.TrimPrefix(r.URL.Path, "/shelley/"))
+	if len(parts) < 2 || len(parts) > 3 {
+		http.NotFound(w, r)
+		return
+	}
+	namespace, workspace := parts[0], parts[1]
+	ws, ok := m.getWorkspace(namespace, workspace)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	target := strings.TrimRight(ws.Runtime.APIBase.String(), "/")
+	if len(parts) == 3 {
+		target += "/c/" + parts[2]
+	}
+	http.Redirect(w, r, target, http.StatusFound)
 }

@@ -745,3 +745,23 @@
   - catalog entries may expose descriptive `requirements`
   - clients select only the local tool itself, not its transitive dependencies
   - managers may satisfy those dependencies through either selected mounts or base runtime binaries
+
+### 2026-03-10 update — live demo sync fixes
+- Fixed a real topic-wire gap in Shelley:
+  - websocket translation had been dropping normal user messages
+  - result: prompts sent from the lightweight topic page or Shelley's native UI did not show up in the other client
+  - `server/workspace_adapter.go` now emits `{"type":"user"}` for persisted user text so the topic websocket is no longer assistant-only
+- Added regression coverage in Shelley for both directions of the shared-topic demo:
+  - API chat now has an assertion that websocket clients receive the user prompt
+  - websocket replay on connect now has an assertion that earlier user prompts are replayed too
+- Tightened the manager demo UI to behave like a real shared client instead of a fake local echo:
+  - the simple topic page now waits for server-originated `user` events rather than appending a local optimistic echo
+  - message rendering now uses DOM nodes plus `textContent` instead of `innerHTML`
+  - reason: keep the demo clients consistent with one another and avoid writing a trivial XSS sink into the page
+- Fixed two demo-entry bugs that were making manual testing noisy:
+  - the manager home page now bootstraps from escaped HTML attributes instead of fragile inline JS string quoting
+  - the Jira MCP fixture script is now served from `/demo-assets/hl7-jira-mcp.js` instead of being embedded into the page
+- Verified live against the running demo:
+  - websocket-originated prompts persist into Shelley and appear in the native Shelley UI
+  - runtime API / native Shelley UI prompts emit `user` events onto the manager topic websocket
+  - the manager `Open Shelley UI` link now resolves to the correct Shelley conversation route `/c/{topic}`

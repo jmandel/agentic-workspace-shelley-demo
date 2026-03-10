@@ -140,6 +140,10 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.handleHome(w, r)
 	case strings.HasPrefix(r.URL.Path, "/app/"):
 		m.handleApp(w, r)
+	case strings.HasPrefix(r.URL.Path, "/shelley/"):
+		m.handleShelleyUIRedirect(w, r)
+	case r.URL.Path == "/demo-assets/hl7-jira-mcp.js":
+		m.handleDemoJiraScript(w, r)
 	case r.URL.Path == "/health":
 		m.handleHealth(w, r)
 	case r.URL.Path == "/apis/v1/local-tools":
