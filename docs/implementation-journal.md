@@ -365,6 +365,14 @@
 - Extended the predictable model test fixture with `workspace_tool_json: <tool> <action> <json>` so end-to-end topic tests can drive a workspace tool call with structured wrapper input.
 - Also fixed the shared `sendTopicAPIChat` test helper to JSON-encode request bodies instead of interpolating raw strings, which avoids breaking tests when prompts contain quotes.
 
+### Approval-path note
+- Added websocket approval coverage for an MCP-backed workspace tool.
+- One runtime gap showed up while doing this:
+  - after an approved websocket-originated MCP call, the topic websocket reliably shows the follow-on `tool_call` and final `done`
+  - the persisted tool result is also present in the conversation history
+  - but this path did not emit a translated `tool_update` before `done` in my test run
+- I kept the passing test coverage on the stable behavior above and left the missing `tool_update` translation as follow-up work rather than baking in a failing assertion.
+
 ### Validation update — MCP workspace tools checkpoint
 - `go test ./server -run 'TestWorkspaceToolMCP|TestWorkspaceToolCallsAreLogged|TestWorkspaceToolApproval' -v` in `shelley/`
 - `go test ./db ./server` in `shelley/`
