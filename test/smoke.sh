@@ -5,14 +5,15 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SHELLEY_DIR="$ROOT_DIR/shelley"
 AW_DIR="$ROOT_DIR/agentic-workspace/reference-impl"
 TMPDIR="$(mktemp -d)"
-PORT_FILE="$TMPDIR/port"
-WORKSPACE_ROOT="$TMPDIR/workspace"
+MANAGER_PORT_FILE="$TMPDIR/manager-port"
+MANAGER_NAMESPACE="acme"
 WORKSPACE_NAME="smoke-workspace"
 RESPONSE_TEXT="workspace-smoke-response-123"
 FILE_DIR=".workspace-smoke-$RANDOM"
 FILE_PATH="$FILE_DIR/note.txt"
 TOOL_NAME="smoke-tool-$RANDOM"
-SERVER_PID=""
+WORKSPACE_ROOT="$TMPDIR/manager-state/$MANAGER_NAMESPACE/$WORKSPACE_NAME/workspace"
+MANAGER_PID=""
 CLI_PID=""
 CLI_BUFFER=""
 
@@ -21,9 +22,9 @@ cleanup() {
     kill "$CLI_PID" 2>/dev/null || true
     wait "$CLI_PID" 2>/dev/null || true
   fi
-  if [[ -n "$SERVER_PID" ]]; then
-    kill "$SERVER_PID" 2>/dev/null || true
-    wait "$SERVER_PID" 2>/dev/null || true
+  if [[ -n "$MANAGER_PID" ]]; then
+    kill "$MANAGER_PID" 2>/dev/null || true
+    wait "$MANAGER_PID" 2>/dev/null || true
   fi
   rm -rf "$TMPDIR"
 }
@@ -94,10 +95,22 @@ log "Building Shelley binary"
   go build -o "$TMPDIR/shelley" ./cmd/shelley
 )
 
+log "Building shelleymanager binary"
+(
+  cd "$ROOT_DIR/shelleymanager"
+  go build -o "$TMPDIR/shelleymanager" ./cmd/shelleymanager
+)
+
 log "Running Shelley server tests"
 (
   cd "$SHELLEY_DIR"
   go test ./server
+)
+
+log "Running shelleymanager tests"
+(
+  cd "$ROOT_DIR/shelleymanager"
+  go test ./...
 )
 
 log "Installing Bun workspace client dependencies"
@@ -106,57 +119,68 @@ log "Installing Bun workspace client dependencies"
   bun install
 )
 
-log "Starting Shelley in predictable workspace mode"
+log "Starting shelleymanager in predictable process-launch mode"
 (
-  cd "$SHELLEY_DIR"
-  WORKSPACE_NAME="$WORKSPACE_NAME" "$TMPDIR/shelley" \
-    -db "$TMPDIR/shelley.db" \
+  cd "$ROOT_DIR"
+  "$TMPDIR/shelleymanager" \
+    -listen 127.0.0.1:0 \
+    -port-file "$MANAGER_PORT_FILE" \
+    -state-dir "$TMPDIR/manager-state" \
+    -namespace "$MANAGER_NAMESPACE" \
+    -runtime-mode process \
+    -shelley-binary "$TMPDIR/shelley" \
     -predictable-only \
     -default-model predictable \
-    serve \
-    -port 0 \
-    -port-file "$PORT_FILE" \
-    -workspace-dir "$WORKSPACE_ROOT" \
-    >"$TMPDIR/shelley.log" 2>&1
+    >"$TMPDIR/shelleymanager.log" 2>&1
 ) &
-SERVER_PID=$!
+MANAGER_PID=$!
 
-timeout 20 bash -c 'until [[ -s "$1" ]]; do :; done' _ "$PORT_FILE"
-PORT="$(tr -d '\n' < "$PORT_FILE")"
-wait_for_http "http://localhost:$PORT/ws/health"
+timeout 20 bash -c 'until [[ -s "$1" ]]; do :; done' _ "$MANAGER_PORT_FILE"
+PORT="$(tr -d '\n' < "$MANAGER_PORT_FILE")"
+wait_for_http "http://localhost:$PORT/health"
 
-log "Checking workspace discovery"
+log "Creating workspace through the manager"
+CREATE_JSON="$(curl -sf -X POST "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces" \
+  -H 'Content-Type: application/json' \
+  -d "{\"name\":\"$WORKSPACE_NAME\",\"topics\":[{\"name\":\"smoke-topic\"}]}")"
+require_output "$CREATE_JSON" "\"name\":\"$WORKSPACE_NAME\"" "POST /apis/v1/namespaces/{ns}/workspaces creates a Shelley-backed workspace"
+require_output "$CREATE_JSON" "\"endpoint\":\"ws://localhost:$PORT/acp/$MANAGER_NAMESPACE/$WORKSPACE_NAME\"" "create response exposes public ACP endpoint"
+
+log "Checking manager discovery"
 WORKSPACES_JSON="$(curl -sf "http://localhost:$PORT/workspaces")"
-require_output "$WORKSPACES_JSON" "$WORKSPACE_NAME" "GET /workspaces exposes the running workspace"
+require_output "$WORKSPACES_JSON" "$WORKSPACE_NAME" "GET /workspaces exposes the managed workspace"
 
-HEALTH_JSON="$(curl -sf "http://localhost:$PORT/ws/health")"
-require_output "$HEALTH_JSON" '"mode":"workspace"' "GET /ws/health reports workspace mode"
+HEALTH_JSON="$(curl -sf "http://localhost:$PORT/health")"
+require_output "$HEALTH_JSON" '"mode":"shelleymanager"' "GET /health reports manager mode"
 
-log "Checking workspace file endpoints"
-curl -sf -X PUT --data-binary 'workspace file body' "http://localhost:$PORT/ws/files/$FILE_PATH" >/dev/null
-FILE_BODY="$(curl -sf "http://localhost:$PORT/ws/files/$FILE_PATH")"
-require_output "$FILE_BODY" "workspace file body" "GET /ws/files/{path} reads file content"
+DETAIL_JSON="$(curl -sf "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME")"
+require_output "$DETAIL_JSON" '"name":"smoke-topic"' "GET workspace detail includes the proxied runtime topics"
+
+log "Checking manager-proxied workspace file endpoints"
+curl -sf -X PUT --data-binary 'workspace file body' "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/files/$FILE_PATH" >/dev/null
+FILE_BODY="$(curl -sf "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/files/$FILE_PATH")"
+require_output "$FILE_BODY" "workspace file body" "proxied GET /files/{path} reads file content"
 HOST_FILE_BODY="$(cat "$WORKSPACE_ROOT/$FILE_PATH")"
-require_output "$HOST_FILE_BODY" "workspace file body" "--workspace-dir roots file writes in the configured directory"
+require_output "$HOST_FILE_BODY" "workspace file body" "managed Shelley runtime roots file writes in its workspace directory"
 
-DIR_JSON="$(curl -sf "http://localhost:$PORT/ws/files/$FILE_DIR")"
-require_output "$DIR_JSON" "$FILE_PATH" "GET /ws/files/{path} lists directories"
+DIR_JSON="$(curl -sf "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/files/$FILE_DIR")"
+require_output "$DIR_JSON" "$FILE_PATH" "proxied GET /files/{path} lists directories"
 
-curl -sf -X DELETE "http://localhost:$PORT/ws/files/$FILE_PATH" >/dev/null
-curl -sf -X DELETE "http://localhost:$PORT/ws/files/$FILE_DIR" >/dev/null
+curl -sf -X DELETE "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/files/$FILE_PATH" >/dev/null
+curl -sf -X DELETE "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/files/$FILE_DIR" >/dev/null
 
-log "Checking workspace tool endpoints"
-TOOL_JSON="$(curl -sf -X POST "http://localhost:$PORT/ws/tools" \
+log "Checking manager-proxied workspace tool endpoints"
+TOOL_JSON="$(curl -sf -X POST "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/tools" \
   -H 'Content-Type: application/json' \
   -d "{\"name\":\"$TOOL_NAME\",\"description\":\"smoke tool\",\"actions\":[\"read\"],\"provider\":\"smoke\"}")"
-require_output "$TOOL_JSON" "$TOOL_NAME" "POST /ws/tools creates a workspace tool"
+require_output "$TOOL_JSON" "$TOOL_NAME" "proxied POST /tools creates a workspace tool"
 
-TOOLS_JSON="$(curl -sf "http://localhost:$PORT/ws/tools")"
-require_output "$TOOLS_JSON" "$TOOL_NAME" "GET /ws/tools lists the created tool"
+TOOLS_JSON="$(curl -sf "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/tools")"
+require_output "$TOOLS_JSON" "$TOOL_NAME" "proxied GET /tools lists the created tool"
 
-curl -sf -X DELETE "http://localhost:$PORT/ws/tools/$TOOL_NAME" >/dev/null
+curl -sf -X DELETE "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/tools/$TOOL_NAME" >/dev/null
 
-log "Running real Bun CLI against Shelley"
+log "Running real Bun CLI against shelleymanager"
 (
   cd "$AW_DIR"
   coproc CLI { WS_MANAGER="http://localhost:$PORT" bun run cli.ts connect "$WORKSPACE_NAME" smoke-topic 2>&1; }
@@ -168,21 +192,6 @@ log "Running real Bun CLI against Shelley"
   read_cli_until "thinking..." "cli.ts saw live workspace system update"
   read_cli_until "$RESPONSE_TEXT" "cli.ts received agent response"
 
-  TOPIC_JSON="$(curl -sf "http://localhost:$PORT/ws/topics/smoke-topic")"
-  SESSION_ID="$(printf '%s' "$TOPIC_JSON" | sed -n 's/.*"sessionId":"\([^\"]*\)".*/\1/p')"
-  if [[ -z "$SESSION_ID" ]]; then
-    printf '  ✗ failed to extract topic session id from /ws/topics/smoke-topic\n'
-    printf '    response: %s\n' "$TOPIC_JSON"
-    exit 1
-  fi
-
-  curl -sf \
-    -X POST \
-    -H 'Content-Type: application/json' \
-    -d '{"message":"echo: api-mixed-client-456","model":"predictable"}' \
-    "http://localhost:$PORT/api/conversation/$SESSION_ID/chat" >/dev/null
-  read_cli_until "api-mixed-client-456" "api chat is broadcast to websocket clients on the same topic"
-
   printf '/quit\n' >&3
   read_cli_until "Disconnected." "cli.ts disconnected cleanly"
   exec 3>&-
@@ -190,17 +199,14 @@ log "Running real Bun CLI against Shelley"
   wait "$CLI_PID"
 )
 
-log "Checking topic listing and Shelley API visibility"
-TOPICS_JSON="$(curl -sf "http://localhost:$PORT/ws/topics")"
-require_output "$TOPICS_JSON" "smoke-topic" "GET /ws/topics lists the connected topic"
+log "Checking topic listing through manager routes"
+TOPICS_JSON="$(curl -sf "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/topics")"
+require_output "$TOPICS_JSON" "smoke-topic" "proxied GET /topics lists the connected topic"
 
 CLI_TOPICS_OUTPUT="$(
   cd "$AW_DIR"
   WS_MANAGER="http://localhost:$PORT" bun run cli.ts topics "$WORKSPACE_NAME"
 )"
 require_output "$CLI_TOPICS_OUTPUT" "smoke-topic" "cli.ts topics lists the connected topic"
-
-CONVERSATIONS_JSON="$(curl -sf "http://localhost:$PORT/api/conversations")"
-require_output "$CONVERSATIONS_JSON" "smoke-topic" "GET /api/conversations exposes the topic conversation"
 
 log "Smoke test passed"

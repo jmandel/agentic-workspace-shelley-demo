@@ -1,0 +1,718 @@
+package manager
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"path"
+	"slices"
+	"strings"
+	"sync"
+	"time"
+)
+
+type Config struct {
+	DefaultNamespace string
+	Launcher         Launcher
+	Logger           *slog.Logger
+}
+
+type Manager struct {
+	defaultNamespace string
+	launcher         Launcher
+	logger           *slog.Logger
+
+	mu         sync.RWMutex
+	workspaces map[workspaceKey]*Workspace
+}
+
+type workspaceKey struct {
+	namespace string
+	name      string
+}
+
+type Workspace struct {
+	Namespace string
+	Name      string
+	CreatedAt time.Time
+	Runtime   Runtime
+}
+
+type Runtime struct {
+	Name    string
+	APIBase *url.URL
+	Mode    string
+	Stop    func(context.Context) error
+	Health  func(context.Context) error
+}
+
+type Launcher interface {
+	Launch(context.Context, LaunchSpec) (*Runtime, error)
+	WorkspacePaths(namespace, name string) (LaunchSpec, error)
+	Name() string
+}
+
+type LaunchSpec struct {
+	Namespace    string
+	Name         string
+	StateDir     string
+	WorkspaceDir string
+	DBPath       string
+}
+
+type workspaceCreateRequest struct {
+	Name   string          `json:"name"`
+	Topics json.RawMessage `json:"topics,omitempty"`
+}
+
+type workspaceSummary struct {
+	ID        string `json:"id,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+	API       string `json:"api,omitempty"`
+	ACP       string `json:"acp,omitempty"`
+	Endpoint  string `json:"endpoint,omitempty"`
+	CreatedAt string `json:"createdAt,omitempty"`
+}
+
+type workspaceDetail struct {
+	workspaceSummary
+	Topics []workspaceTopicRef `json:"topics,omitempty"`
+}
+
+type workspaceTopicRef struct {
+	Name string `json:"name"`
+	ACP  string `json:"acp,omitempty"`
+}
+
+type runtimeTopicInfo struct {
+	Name string `json:"name"`
+}
+
+func New(cfg Config) (*Manager, error) {
+	if cfg.Launcher == nil {
+		return nil, errors.New("launcher required")
+	}
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	namespace := strings.TrimSpace(cfg.DefaultNamespace)
+	if namespace == "" {
+		namespace = "default"
+	}
+	return &Manager{
+		defaultNamespace: namespace,
+		launcher:         cfg.Launcher,
+		logger:           logger,
+		workspaces:       map[workspaceKey]*Workspace{},
+	}, nil
+}
+
+func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case r.URL.Path == "/health":
+		m.handleHealth(w, r)
+	case r.URL.Path == "/workspaces":
+		m.handleCompatCollection(w, r)
+	case strings.HasPrefix(r.URL.Path, "/workspaces/"):
+		m.handleCompatWorkspace(w, r)
+	case strings.HasPrefix(r.URL.Path, "/apis/v1/namespaces/"):
+		m.handleNamespaced(w, r)
+	case strings.HasPrefix(r.URL.Path, "/acp/"):
+		m.handleACP(w, r)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (m *Manager) Shutdown(ctx context.Context) error {
+	m.mu.Lock()
+	workspaces := make([]*Workspace, 0, len(m.workspaces))
+	for _, ws := range m.workspaces {
+		workspaces = append(workspaces, ws)
+	}
+	m.workspaces = map[workspaceKey]*Workspace{}
+	m.mu.Unlock()
+
+	var errs []error
+	for _, ws := range workspaces {
+		if ws.Runtime.Stop != nil {
+			if err := ws.Runtime.Stop(ctx); err != nil {
+				errs = append(errs, fmt.Errorf("%s/%s: %w", ws.Namespace, ws.Name, err))
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (m *Manager) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	m.mu.RLock()
+	count := len(m.workspaces)
+	m.mu.RUnlock()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":      "ok",
+		"workspaces":  count,
+		"namespace":   m.defaultNamespace,
+		"launcher":    m.launcher.Name(),
+		"mode":        "shelleymanager",
+		"runtimePath": "/ws/*",
+	})
+}
+
+func (m *Manager) handleCompatCollection(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		m.writeCompatList(w, r, m.defaultNamespace)
+	case http.MethodPost:
+		m.createWorkspace(w, r, m.defaultNamespace, true)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (m *Manager) handleCompatWorkspace(w http.ResponseWriter, r *http.Request) {
+	trimmed := strings.TrimPrefix(r.URL.Path, "/workspaces/")
+	parts := splitPath(trimmed)
+	if len(parts) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	name := parts[0]
+	if err := validateName(name); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if len(parts) == 1 {
+		switch r.Method {
+		case http.MethodGet:
+			ws, ok := m.getWorkspace(m.defaultNamespace, name)
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			m.writeCompatDetail(w, r, ws)
+		case http.MethodDelete:
+			m.deleteWorkspace(w, r, m.defaultNamespace, name)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+		return
+	}
+
+	ws, ok := m.getWorkspace(m.defaultNamespace, name)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	if parts[1] == "acp" {
+		if len(parts) != 3 {
+			http.NotFound(w, r)
+			return
+		}
+		m.proxyRuntime(w, r, ws, "/ws/topic/"+parts[2])
+		return
+	}
+
+	runtimePath := "/ws/" + strings.Join(parts[1:], "/")
+	m.proxyRuntime(w, r, ws, runtimePath)
+}
+
+func (m *Manager) handleNamespaced(w http.ResponseWriter, r *http.Request) {
+	parts := splitPath(strings.TrimPrefix(r.URL.Path, "/"))
+	if len(parts) < 5 || parts[0] != "apis" || parts[1] != "v1" || parts[2] != "namespaces" || parts[4] != "workspaces" {
+		http.NotFound(w, r)
+		return
+	}
+
+	namespace := parts[3]
+	if err := validateName(namespace); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if len(parts) == 5 {
+		switch r.Method {
+		case http.MethodGet:
+			m.writeSpecList(w, r, namespace)
+		case http.MethodPost:
+			m.createWorkspace(w, r, namespace, false)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+		return
+	}
+
+	name := parts[5]
+	if err := validateName(name); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if len(parts) == 6 {
+		switch r.Method {
+		case http.MethodGet:
+			ws, ok := m.getWorkspace(namespace, name)
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			m.writeSpecDetail(w, r, ws)
+		case http.MethodDelete:
+			m.deleteWorkspace(w, r, namespace, name)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+		return
+	}
+
+	ws, ok := m.getWorkspace(namespace, name)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	runtimePath := "/ws/" + strings.Join(parts[6:], "/")
+	m.proxyRuntime(w, r, ws, runtimePath)
+}
+
+func (m *Manager) handleACP(w http.ResponseWriter, r *http.Request) {
+	parts := splitPath(strings.TrimPrefix(r.URL.Path, "/"))
+	if len(parts) != 5 || parts[0] != "acp" || parts[3] != "topics" {
+		http.NotFound(w, r)
+		return
+	}
+	namespace := parts[1]
+	name := parts[2]
+	topic := parts[4]
+	if err := validateName(namespace); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := validateName(name); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := validateName(topic); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	ws, ok := m.getWorkspace(namespace, name)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	m.proxyRuntime(w, r, ws, "/ws/topic/"+topic)
+}
+
+func (m *Manager) createWorkspace(w http.ResponseWriter, r *http.Request, namespace string, compat bool) {
+	var req workspaceCreateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if err := validateName(req.Name); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	topics, err := decodeTopics(req.Topics)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	key := workspaceKey{namespace: namespace, name: req.Name}
+
+	m.mu.Lock()
+	if _, exists := m.workspaces[key]; exists {
+		m.mu.Unlock()
+		http.Error(w, "workspace already exists", http.StatusConflict)
+		return
+	}
+	m.mu.Unlock()
+
+	spec, err := m.launcher.WorkspacePaths(namespace, req.Name)
+	if err != nil {
+		m.logger.Error("failed to build workspace paths", "namespace", namespace, "name", req.Name, "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	runtime, err := m.launcher.Launch(r.Context(), spec)
+	if err != nil {
+		m.logger.Error("failed to launch workspace runtime", "namespace", namespace, "name", req.Name, "error", err)
+		http.Error(w, "failed to launch workspace runtime", http.StatusBadGateway)
+		return
+	}
+	ws := &Workspace{
+		Namespace: namespace,
+		Name:      req.Name,
+		CreatedAt: time.Now().UTC(),
+		Runtime:   *runtime,
+	}
+
+	if err := m.ensureTopics(r.Context(), ws, topics); err != nil {
+		if runtime.Stop != nil {
+			_ = runtime.Stop(context.Background())
+		}
+		m.logger.Error("failed to precreate runtime topics", "namespace", namespace, "name", req.Name, "error", err)
+		http.Error(w, "failed to initialize runtime topics", http.StatusBadGateway)
+		return
+	}
+
+	m.mu.Lock()
+	m.workspaces[key] = ws
+	m.mu.Unlock()
+
+	if compat {
+		writeJSON(w, http.StatusCreated, m.compatDetail(r, ws, topics))
+		return
+	}
+	writeJSON(w, http.StatusCreated, m.specDetail(r, ws, topics))
+}
+
+func (m *Manager) deleteWorkspace(w http.ResponseWriter, r *http.Request, namespace, name string) {
+	key := workspaceKey{namespace: namespace, name: name}
+	m.mu.Lock()
+	ws, ok := m.workspaces[key]
+	if ok {
+		delete(m.workspaces, key)
+	}
+	m.mu.Unlock()
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if ws.Runtime.Stop != nil {
+		if err := ws.Runtime.Stop(r.Context()); err != nil {
+			m.logger.Error("failed to stop workspace runtime", "namespace", namespace, "name", name, "error", err)
+			http.Error(w, "failed to stop workspace runtime", http.StatusBadGateway)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name":   name,
+		"status": "deleted",
+	})
+}
+
+func (m *Manager) writeCompatList(w http.ResponseWriter, r *http.Request, namespace string) {
+	workspaces := m.listWorkspaces(namespace)
+	resp := make([]workspaceSummary, 0, len(workspaces))
+	for _, ws := range workspaces {
+		resp = append(resp, m.compatSummary(r, ws))
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (m *Manager) writeCompatDetail(w http.ResponseWriter, r *http.Request, ws *Workspace) {
+	topics := m.runtimeTopics(r.Context(), ws)
+	names := make([]string, 0, len(topics))
+	for _, topic := range topics {
+		names = append(names, topic.Name)
+	}
+	writeJSON(w, http.StatusOK, m.compatDetail(r, ws, names))
+}
+
+func (m *Manager) writeSpecList(w http.ResponseWriter, r *http.Request, namespace string) {
+	workspaces := m.listWorkspaces(namespace)
+	resp := make([]workspaceSummary, 0, len(workspaces))
+	for _, ws := range workspaces {
+		resp = append(resp, m.specSummary(r, ws))
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (m *Manager) writeSpecDetail(w http.ResponseWriter, r *http.Request, ws *Workspace) {
+	writeJSON(w, http.StatusOK, m.specDetail(r, ws, nil))
+}
+
+func (m *Manager) ensureTopics(ctx context.Context, ws *Workspace, topics []string) error {
+	for _, topic := range topics {
+		body, _ := json.Marshal(map[string]string{"name": topic})
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, ws.Runtime.APIBase.String()+"/ws/topics", bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return err
+		}
+		io.Copy(io.Discard, res.Body)
+		res.Body.Close()
+		if res.StatusCode != http.StatusCreated && res.StatusCode != http.StatusConflict {
+			return fmt.Errorf("precreate topic %q: unexpected status %d", topic, res.StatusCode)
+		}
+	}
+	return nil
+}
+
+func (m *Manager) runtimeTopics(ctx context.Context, ws *Workspace) []runtimeTopicInfo {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ws.Runtime.APIBase.String()+"/ws/topics", nil)
+	if err != nil {
+		return nil
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, res.Body)
+		return nil
+	}
+	var topics []runtimeTopicInfo
+	if err := json.NewDecoder(res.Body).Decode(&topics); err != nil {
+		return nil
+	}
+	slices.SortFunc(topics, func(a, b runtimeTopicInfo) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+	return topics
+}
+
+func (m *Manager) proxyRuntime(w http.ResponseWriter, r *http.Request, ws *Workspace, runtimePath string) {
+	target := *ws.Runtime.APIBase
+	proxy := &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			req.URL.Scheme = target.Scheme
+			req.URL.Host = target.Host
+			req.Host = target.Host
+			req.URL.Path = cleanProxyPath(runtimePath)
+			req.URL.RawPath = req.URL.Path
+		},
+		ErrorHandler: func(rw http.ResponseWriter, req *http.Request, err error) {
+			m.logger.Error("runtime proxy failed", "workspace", ws.Name, "path", runtimePath, "error", err)
+			http.Error(rw, "runtime unavailable", http.StatusBadGateway)
+		},
+	}
+	proxy.ServeHTTP(w, r)
+}
+
+func (m *Manager) getWorkspace(namespace, name string) (*Workspace, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	ws, ok := m.workspaces[workspaceKey{namespace: namespace, name: name}]
+	return ws, ok
+}
+
+func (m *Manager) listWorkspaces(namespace string) []*Workspace {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	workspaces := make([]*Workspace, 0, len(m.workspaces))
+	for _, ws := range m.workspaces {
+		if ws.Namespace == namespace {
+			workspaces = append(workspaces, ws)
+		}
+	}
+	slices.SortFunc(workspaces, func(a, b *Workspace) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+	return workspaces
+}
+
+func (m *Manager) compatSummary(r *http.Request, ws *Workspace) workspaceSummary {
+	return workspaceSummary{
+		Name:      ws.Name,
+		Status:    m.runtimeStatus(r.Context(), ws),
+		API:       m.compatAPIBase(r, ws),
+		ACP:       m.compatACPBase(r, ws),
+		CreatedAt: ws.CreatedAt.Format(time.RFC3339),
+	}
+}
+
+func (m *Manager) compatDetail(r *http.Request, ws *Workspace, topics []string) map[string]any {
+	resp := map[string]any{
+		"name":      ws.Name,
+		"status":    m.runtimeStatus(r.Context(), ws),
+		"api":       m.compatAPIBase(r, ws),
+		"acp":       m.compatACPBase(r, ws),
+		"createdAt": ws.CreatedAt.Format(time.RFC3339),
+	}
+	if len(topics) > 0 {
+		resp["topics"] = topics
+	}
+	return resp
+}
+
+func (m *Manager) specSummary(r *http.Request, ws *Workspace) workspaceSummary {
+	return workspaceSummary{
+		ID:        workspaceID(ws),
+		Namespace: ws.Namespace,
+		Name:      ws.Name,
+		Status:    m.runtimeStatus(r.Context(), ws),
+		API:       m.specAPIBase(r, ws),
+		Endpoint:  m.specACPBase(r, ws),
+		CreatedAt: ws.CreatedAt.Format(time.RFC3339),
+	}
+}
+
+func (m *Manager) specDetail(r *http.Request, ws *Workspace, topics []string) workspaceDetail {
+	if topics == nil {
+		topicInfos := m.runtimeTopics(r.Context(), ws)
+		topics = make([]string, 0, len(topicInfos))
+		for _, topic := range topicInfos {
+			topics = append(topics, topic.Name)
+		}
+	}
+	resp := workspaceDetail{
+		workspaceSummary: workspaceSummary{
+			ID:        workspaceID(ws),
+			Namespace: ws.Namespace,
+			Name:      ws.Name,
+			Status:    m.runtimeStatus(r.Context(), ws),
+			API:       m.specAPIBase(r, ws),
+			Endpoint:  m.specACPBase(r, ws),
+			CreatedAt: ws.CreatedAt.Format(time.RFC3339),
+		},
+	}
+	for _, topic := range topics {
+		resp.Topics = append(resp.Topics, workspaceTopicRef{
+			Name: topic,
+			ACP:  m.specACPBase(r, ws) + "/topics/" + topic,
+		})
+	}
+	return resp
+}
+
+func (m *Manager) runtimeStatus(ctx context.Context, ws *Workspace) string {
+	if ws.Runtime.Health == nil {
+		return "running"
+	}
+	healthCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := ws.Runtime.Health(healthCtx); err != nil {
+		return "unavailable"
+	}
+	return "running"
+}
+
+func (m *Manager) compatAPIBase(r *http.Request, ws *Workspace) string {
+	return requestBase(r, false) + "/workspaces/" + ws.Name
+}
+
+func (m *Manager) compatACPBase(r *http.Request, ws *Workspace) string {
+	return requestBase(r, true) + "/workspaces/" + ws.Name + "/acp"
+}
+
+func (m *Manager) specAPIBase(r *http.Request, ws *Workspace) string {
+	return requestBase(r, false) + "/apis/v1/namespaces/" + ws.Namespace + "/workspaces/" + ws.Name
+}
+
+func (m *Manager) specACPBase(r *http.Request, ws *Workspace) string {
+	return requestBase(r, true) + "/acp/" + ws.Namespace + "/" + ws.Name
+}
+
+func decodeTopics(raw json.RawMessage) ([]string, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, nil
+	}
+	var names []string
+	if err := json.Unmarshal(raw, &names); err == nil {
+		for _, name := range names {
+			if err := validateName(name); err != nil {
+				return nil, fmt.Errorf("invalid topic name %q: %w", name, err)
+			}
+		}
+		return names, nil
+	}
+	var topics []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &topics); err != nil {
+		return nil, errors.New("topics must be an array of strings or objects with name")
+	}
+	names = nil
+	for _, topic := range topics {
+		if err := validateName(topic.Name); err != nil {
+			return nil, fmt.Errorf("invalid topic name %q: %w", topic.Name, err)
+		}
+		names = append(names, topic.Name)
+	}
+	return names, nil
+}
+
+func requestBase(r *http.Request, websocket bool) string {
+	scheme := "http"
+	if websocket {
+		scheme = "ws"
+	}
+	if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); forwarded != "" {
+		switch forwarded {
+		case "https":
+			if websocket {
+				scheme = "wss"
+			} else {
+				scheme = "https"
+			}
+		case "wss":
+			if websocket {
+				scheme = "wss"
+			}
+		case "ws":
+			if websocket {
+				scheme = "ws"
+			}
+		case "http":
+			if websocket {
+				scheme = "ws"
+			}
+		}
+	} else if r.TLS != nil {
+		if websocket {
+			scheme = "wss"
+		} else {
+			scheme = "https"
+		}
+	}
+	return scheme + "://" + r.Host
+}
+
+func workspaceID(ws *Workspace) string {
+	return ws.Name + "." + ws.Namespace + "@shelleymanager"
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func splitPath(path string) []string {
+	trimmed := strings.Trim(path, "/")
+	if trimmed == "" {
+		return nil
+	}
+	return strings.Split(trimmed, "/")
+}
+
+func cleanProxyPath(p string) string {
+	if p == "" {
+		return "/"
+	}
+	return path.Clean("/" + strings.TrimPrefix(p, "/"))
+}
+
+func validateName(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("name required")
+	}
+	for _, ch := range name {
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.' {
+			continue
+		}
+		return fmt.Errorf("invalid name %q", name)
+	}
+	return nil
+}

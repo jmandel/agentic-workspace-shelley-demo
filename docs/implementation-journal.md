@@ -499,3 +499,57 @@
 - Kept the current implementation bias:
   - do not force the manager to proxy all runtime traffic
   - but do not spend more spec surface on that question until it becomes blocking
+
+### 2026-03-10 update — `shelleymanager` proxy slice
+- Added a new `shelleymanager/` Go module that acts as a public control plane plus reverse proxy for isolated single-workspace Shelley runtimes.
+- Current manager behavior:
+  - creates one Shelley runtime per workspace
+  - keeps the runtime on a private loopback address
+  - exposes public manager-style routes and proxies them to the runtime's internal `/ws/*` surface
+- Implemented public routes:
+  - manager health: `/health`
+  - compatibility manager: `/workspaces`, `/workspaces/{name}`
+  - canonical manager shape: `/apis/v1/namespaces/{ns}/workspaces...`
+  - public topic websocket: `/acp/{ns}/{workspace}/topics/{topic}`
+- Implemented proxy mapping:
+  - public `/apis/v1/namespaces/{ns}/workspaces/{name}/topics...` -> runtime `/ws/topics...`
+  - public `/apis/v1/namespaces/{ns}/workspaces/{name}/tools...` -> runtime `/ws/tools...`
+  - public `/apis/v1/namespaces/{ns}/workspaces/{name}/files...` -> runtime `/ws/files...`
+  - public websocket `/acp/{ns}/{workspace}/topics/{topic}` -> runtime `/ws/topic/{topic}`
+- Kept the Bun CLI-compatible discovery shape on the manager:
+  - `GET /workspaces/{name}` returns `api` rooted at `/workspaces/{name}`
+  - `acp` rooted at `/workspaces/{name}/acp`
+  - manager proxies those compatibility paths to the same runtime underneath
+
+### Launch isolation options
+- The manager runtime launcher is configurable rather than Docker-hardcoded.
+- Initial launch modes:
+  - `process`
+  - `docker`
+  - `bwrap`
+- Validation today is strongest for:
+  - `process` mode end-to-end in smoke
+  - `docker` / `bwrap` command construction in unit tests
+- Design intent:
+  - the manager owns public ingress
+  - the launcher owns how a Shelley runtime is isolated and started
+  - the proxy layer does not care whether isolation is a subprocess, container, or bubblewrap sandbox
+
+### Bug caught during manager bring-up
+- The first live manager create attempt failed while precreating topics.
+- Root cause:
+  - JSON decode fallback from `topics: [{"name":"..."}]` first tried `[]string`
+  - Go left a zero-value string element behind even on unmarshal error
+  - the fallback object path appended to that slice instead of resetting it
+  - result: the manager tried to create an empty topic name before the real one
+- Fixed by clearing the partially filled slice before decoding object-form topics.
+- Added a regression test for object-form topic decoding.
+
+### Validation update — `shelleymanager`
+- `cd shelleymanager && go test ./...`
+- `./test/smoke.sh`
+  - now builds both `shelley` and `shelleymanager`
+  - starts `shelleymanager`
+  - creates a workspace via `POST /apis/v1/namespaces/{ns}/workspaces`
+  - verifies proxied files and tools through the public manager routes
+  - runs the Bun CLI through manager `/workspaces` discovery and public proxied websocket traffic
