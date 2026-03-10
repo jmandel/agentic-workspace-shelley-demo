@@ -7,12 +7,11 @@ Show one believable collaborative standards workflow:
 - Priya creates a fresh isolated workspace through Shelley Manager.
 - She opens a shared topic in the browser and asks Shelley to debug a FHIR
   validator failure.
-- Shelley uses a local non-MCP tool to run the FHIR Validator JAR inside the
+- Shelley uses a trusted local runtime tool to run the FHIR Validator JAR inside the
   workspace.
 - Marco joins late from the CLI, catches up to the in-progress topic, and asks
   Shelley to search related HL7 Jira issues through an MCP stdio tool.
-- Shelley edits the profile, re-runs validation, and then pauses on a
-  publish-preview action until Priya approves it.
+- Shelley edits the profile and re-runs validation.
 
 This should feel like a real standards-team debugging session, not a synthetic
 "agent does generic task" demo.
@@ -59,21 +58,74 @@ Use these exact demo values every time.
 - repo/template label in the create form: `acme-rpm-ig`
 - topic name: `bp-panel-validator`
 
+## Tool Model In This Demo
+
+The mainline demo should show only two tool paths.
+
+### 1. Trusted local runtime tools
+
+These are mounted into the isolated workspace and are reachable through bash.
+They are not registered through the workspace tool API and they are not shown
+to Shelley as first-class `workspace_*` tools.
+
+Main demo example:
+
+- `fhir-validator`
+
+Possible follow-on example if there is extra time:
+
+- `ig-publisher`
+
+### 2. Managed MCP workspace tools
+
+These are registered through the workspace tool API and surfaced to Shelley as
+first-class `workspace_*` tools.
+
+Main demo example:
+
+- `hl7-jira`
+
+Important narration point:
+
+- the MCP tool runs inside the bubblewrapped Shelley runtime
+- for a realistic stdio MCP story, the configuration should usually use `npx`
+
+Example configuration shape:
+
+```json
+{
+  "protocol": "mcp",
+  "config": {
+    "transport": "stdio",
+    "command": "npx",
+    "args": ["-y", "@acme-demo/hl7-jira-mcp"]
+  }
+}
+```
+
+### What We Should Not Mix Into The Mainline Demo
+
+We should not try to demonstrate every possible tool category in one story.
+
+In particular, approval-gated tools should be kept out of the mainline demo
+unless approval itself is the headline feature we want to emphasize.
+
 ## Tools In The Demo
 
 ### `fhir-validator`
 
-- kind: workspace-local executable tool
-- protocol: not MCP
+- kind: trusted local runtime tool
+- access pattern: Shelley reaches it through bash inside the workspace runtime
 - implementation: wrapper script around the FHIR Validator JAR already present
-  in the workspace image or mounted tool cache
+  in the shared tools mount
 - purpose: run IG validation and show concrete output against the generated
   StructureDefinition
 
 ### `hl7-jira`
 
 - kind: MCP stdio workspace tool
-- implementation: Bun fixture MCP server
+- implementation: MCP stdio fixture launched inside the bubblewrapped runtime,
+  ideally through `npx`
 - purpose: search a small fixture set of HL7 Jira issues
 - tool name exposed through MCP: `jira.search`
 
@@ -84,11 +136,12 @@ Fixture results should include:
 - `FHIR-40277`
   - title: `Clarify blood pressure component slicing examples in profiling guidance`
 
-### `publish-preview`
+### `ig-publisher` (optional extension)
 
-- kind: workspace tool
-- policy: static `approval_required`
-- purpose: demonstrate a real pause-for-approval step before a sensitive action
+- kind: trusted local runtime tool
+- access pattern: Shelley reaches it through bash inside the workspace runtime
+- purpose: optional second-act proof that approved local tooling can be used
+  without going through MCP
 
 ## Starting Files
 
@@ -193,9 +246,10 @@ What the audience sees:
 
 Presenter line:
 
-> This first tool is deliberately not MCP. It is just a workspace-local
-> executable tool around the validator JAR. We want to show that the workspace
-> can host both plain executable tools and MCP-backed tools.
+> This first tool is deliberately not MCP. It is a trusted local runtime tool
+> mounted into the isolated workspace and reachable through bash. We want to
+> show that the workspace can host both local runtime tools and MCP-backed
+> tools.
 
 ### 4. Marco joins late from the CLI and catches up
 
@@ -243,8 +297,9 @@ Shelley summarizes:
 
 Presenter line:
 
-> This second tool is MCP over stdio. Same shared workspace, different tool
-> transport, no change in how the participants collaborate.
+> This second tool is MCP over stdio. It runs inside the bubblewrapped runtime,
+> typically through `npx`, and it shows the first-class tool path that Shelley
+> gets through the workspace tools API.
 
 ### 6. Priya asks Shelley to fix the profile and re-run validation
 
@@ -277,42 +332,22 @@ Presenter line:
 > validator, used the Jira tool for context, then made a concrete standards edit
 > in the workspace and verified it by running the validator again.
 
-### 7. Priya asks Shelley to publish a preview
-
-Priya types:
-
-> Publish a preview build for tomorrow's work group review.
-
-Shelley invokes `publish-preview`, but that tool has a static
-`approval_required` policy.
-
-What the audience sees:
-
-- an approval request event on the topic
-- browser and CLI both see it
-- the tool does not continue yet
-
-The approval request summary should read something like:
-
-- tool: `publish-preview`
-- action: `publish`
-- summary: `Publish preview for bp-ig-fix after successful blood pressure panel validation`
-
-### 8. Priya approves the publish
-
-Priya clicks `Approve` in the browser.
-
-What the audience sees:
-
-- the approval request resolves
-- Shelley resumes the paused tool call
-- `publish-preview` completes successfully
+### 7. Shelley closes the debugging loop
 
 Shelley closes with:
 
-> The preview build is published for review. The blood pressure panel slicing
-> error is fixed, validation is clean, and the workspace transcript captured the
-> whole debugging session.
+> The blood pressure panel slicing error is fixed, the profile validates, and
+> both participants stayed synchronized in the same workspace topic throughout
+> the debugging session.
+
+### Optional extension: run IG Publisher locally
+
+If there is extra time, Priya can ask:
+
+> Run the IG publisher and make sure the preview site still builds.
+
+This should be presented as another trusted local runtime tool, not as an MCP
+tool and not as an approval-gated tool.
 
 ## What This Demo Proves
 
@@ -322,10 +357,8 @@ Shelley closes with:
 - A browser user and a CLI user can collaborate in the same topic.
 - A late joiner can catch up to an in-progress topic session.
 - The workspace can host both:
-  - a plain local executable tool
-  - an MCP stdio tool
-- Static approval policy is enough to gate a sensitive action in a believable
-  workflow.
+  - a trusted local runtime tool reachable through bash
+  - a first-class MCP stdio tool registered through the API
 
 ## Exact Presenter Script
 
@@ -339,12 +372,10 @@ If the live demo needs tighter narration, use this sequence:
 4. "Marco joins the same topic late from the CLI and catches up to the current
    session."
 5. "Marco asks Shelley to search related HL7 Jira issues through an MCP stdio
-   tool."
+   tool running inside the bubblewrapped workspace runtime."
 6. "Shelley updates the FSH, re-runs validation, and clears the slicing error."
-7. "When Priya asks Shelley to publish a preview, the workspace pauses on an
-   approval request."
-8. "Priya approves, the publish completes, and both participants have been
-   watching the same shared topic the entire time."
+7. "The architectural split is that the validator is a trusted local runtime
+   capability, while Jira search is a first-class MCP workspace tool."
 
 ## Must-Work Checklist Before Demo
 
@@ -355,12 +386,16 @@ If the live demo needs tighter narration, use this sequence:
 - Topic realtime:
   - browser + CLI on same topic
   - late-join replay for active session
-  - prompt/tool/approval visibility on both clients
+  - prompt/tool visibility on both clients
 - Tools:
-  - hosted registration of `fhir-validator`
+  - runtime availability of `fhir-validator` in the shared local tools mount
   - hosted registration of `hl7-jira` as MCP stdio
-  - hosted registration of `publish-preview`
-- Approval:
-  - static `approval_required` grant on `publish-preview`
-  - approve from browser
-  - resume tool execution after approval
+  - runtime availability of `npx` inside `bwrap`
+
+## Optional Follow-On Demo
+
+If we decide approval is important enough to headline, it should be a second
+short demo or an explicit extension, not mixed into the mainline story.
+
+That extension should use a genuinely managed tool with external side effects,
+not the local validator or IG publisher path.

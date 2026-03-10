@@ -648,3 +648,16 @@
 - Design consequence for the demo:
   - MCP tools now have a better runtime story with shared tool bundles or system installs
   - the remaining modeling question is specifically about trusted local non-MCP tools such as `fhir-validator` and `ig-publisher`, not about MCP stdio transport itself
+
+### 2026-03-10 update — simplified live demo tool story
+- Updated `docs/demo-run-of-show.md` to make the tool model explicit.
+- The mainline demo now intentionally shows only two paths:
+  - trusted local runtime tools reachable through bash, using `fhir-validator`
+  - managed MCP workspace tools, using `hl7-jira`
+- I removed approval from the core run-of-show and moved it to an optional follow-on demo.
+- Reason:
+  - mixing late join, local tools, MCP tools, and approval in one short live story made the architecture harder to explain
+  - the simpler story better matches the current implementation boundary:
+    - trusted local bundles are a manager/runtime concern
+    - MCP tools are the first-class workspace tool API story
+- I also made the narration clearer that stdio MCP runs inside the bubblewrapped runtime, typically via `npx`, rather than as a host-side subprocess outside isolation.
