@@ -204,16 +204,23 @@ func (l CommandLauncher) buildDockerCommand(spec LaunchSpec, hostPort int) (*exe
 		"--name", containerName,
 		"-p", fmt.Sprintf("127.0.0.1:%d:%d", hostPort, hostPort),
 		"-e", "WORKSPACE_NAME=" + spec.Name,
+		"-e", "WORKSPACE_NAMESPACE=" + spec.Namespace,
 		"-e", "PATH=" + prependPath(filepath.ToSlash(filepath.Join(runtimeSharedToolsDir, "bin")), os.Getenv("PATH")),
-		"-e", "HOME="+containerHome,
-		"-e", "TMPDIR="+containerTmp,
-		"-e", "JAVA_TOOL_OPTIONS="+javaToolOptions(containerHome, os.Getenv("JAVA_TOOL_OPTIONS")),
+		"-e", "HOME=" + containerHome,
+		"-e", "TMPDIR=" + containerTmp,
+		"-e", "JAVA_TOOL_OPTIONS=" + javaToolOptions(containerHome, os.Getenv("JAVA_TOOL_OPTIONS")),
 		"-v", spec.StateDir + ":" + containerState,
 		"-v", spec.WorkspaceDir + ":" + containerWorkspace,
 		"-v", filepath.Join(spec.StateDir, "tools") + ":" + runtimeSharedToolsDir,
 		"-w", containerWorkspace,
 	}
 	args = append(args, "-e", "WORKSPACE_TOOLS_DIR="+runtimeSharedToolsDir)
+	if strings.TrimSpace(spec.ManagerURL) != "" {
+		args = append(args, "-e", "WORKSPACE_MANAGER_INTERNAL_URL="+spec.ManagerURL)
+	}
+	if strings.TrimSpace(spec.ManagerToken) != "" {
+		args = append(args, "-e", "WORKSPACE_MANAGER_TOKEN="+spec.ManagerToken)
+	}
 	for _, tool := range spec.LocalTools {
 		args = append(args, "-v", tool.HostRoot+":"+filepath.ToSlash(filepath.Join(runtimeSharedToolsDir, tool.Name))+":ro")
 	}
@@ -251,12 +258,19 @@ func (l CommandLauncher) buildBwrapCommand(spec LaunchSpec, hostPort int) (*exec
 		"--proc", "/proc",
 		"--chdir", bwrapSandboxWorkspace,
 		"--setenv", "WORKSPACE_NAME", spec.Name,
+		"--setenv", "WORKSPACE_NAMESPACE", spec.Namespace,
 		"--setenv", "HOME", bwrapSandboxHome,
 		"--setenv", "TMPDIR", "/tmp",
 		"--setenv", "JAVA_TOOL_OPTIONS", javaToolOptions(bwrapSandboxHome, os.Getenv("JAVA_TOOL_OPTIONS")),
 		"--setenv", "WORKSPACE_TOOLS_DIR", runtimeSharedToolsDir,
 		"--setenv", "PATH", prependPath(filepath.ToSlash(filepath.Join(runtimeSharedToolsDir, "bin")), os.Getenv("PATH")),
 	)
+	if strings.TrimSpace(spec.ManagerURL) != "" {
+		args = append(args, "--setenv", "WORKSPACE_MANAGER_INTERNAL_URL", spec.ManagerURL)
+	}
+	if strings.TrimSpace(spec.ManagerToken) != "" {
+		args = append(args, "--setenv", "WORKSPACE_MANAGER_TOKEN", spec.ManagerToken)
+	}
 	for _, tool := range spec.LocalTools {
 		args = append(args, "--ro-bind", tool.HostRoot, filepath.ToSlash(filepath.Join(runtimeSharedToolsDir, tool.Name)))
 	}
@@ -448,6 +462,7 @@ func (l CommandLauncher) bwrapRuntimeFSArgs(spec LaunchSpec) []string {
 func (l CommandLauncher) runtimeEnv(base []string, spec LaunchSpec, sandboxed bool) []string {
 	env := append([]string{}, base...)
 	env = append(env, "WORKSPACE_NAME="+spec.Name)
+	env = append(env, "WORKSPACE_NAMESPACE="+spec.Namespace)
 	toolsDir := filepath.Join(spec.StateDir, "tools")
 	homeDir := filepath.Join(spec.StateDir, "home")
 	tmpDir := filepath.Join(spec.StateDir, "tmp")
@@ -457,6 +472,12 @@ func (l CommandLauncher) runtimeEnv(base []string, spec LaunchSpec, sandboxed bo
 		tmpDir = "/tmp"
 	}
 	env = append(env, "WORKSPACE_TOOLS_DIR="+toolsDir)
+	if strings.TrimSpace(spec.ManagerURL) != "" {
+		env = append(env, "WORKSPACE_MANAGER_INTERNAL_URL="+spec.ManagerURL)
+	}
+	if strings.TrimSpace(spec.ManagerToken) != "" {
+		env = append(env, "WORKSPACE_MANAGER_TOKEN="+spec.ManagerToken)
+	}
 	env = append(env, "HOME="+homeDir)
 	env = append(env, "TMPDIR="+tmpDir)
 	env = append(env, "JAVA_TOOL_OPTIONS="+javaToolOptions(homeDir, os.Getenv("JAVA_TOOL_OPTIONS")))

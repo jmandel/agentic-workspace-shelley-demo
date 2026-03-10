@@ -27,63 +27,44 @@ func (m *Manager) RecoverWorkspaces(ctx context.Context) (int, error) {
 		return 0, nil
 	}
 
-	namespaceEntries, err := os.ReadDir(m.stateRoot)
+	namespace := m.defaultNamespace
+	namespaceDir := filepath.Join(m.stateRoot, namespace)
+	workspaceEntries, err := os.ReadDir(namespaceDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return 0, nil
 		}
-		return 0, err
+		return 0, fmt.Errorf("read namespace %q: %w", namespace, err)
 	}
 
 	recovered := 0
 	var errs []error
-	for _, namespaceEntry := range namespaceEntries {
-		if !namespaceEntry.IsDir() {
+	for _, workspaceEntry := range workspaceEntries {
+		if !workspaceEntry.IsDir() {
 			continue
 		}
-		namespace := strings.TrimSpace(namespaceEntry.Name())
-		if namespace == "" || strings.HasPrefix(namespace, ".") {
+		name := strings.TrimSpace(workspaceEntry.Name())
+		if name == "" || strings.HasPrefix(name, ".") {
 			continue
 		}
-		if err := validateName(namespace); err != nil {
-			errs = append(errs, fmt.Errorf("skip namespace %q: %w", namespace, err))
+		if err := validateName(name); err != nil {
+			errs = append(errs, fmt.Errorf("skip workspace %q/%q: %w", namespace, name, err))
 			continue
 		}
-
-		namespaceDir := filepath.Join(m.stateRoot, namespace)
-		workspaceEntries, err := os.ReadDir(namespaceDir)
+		recoverable, err := isRecoverableWorkspaceDir(filepath.Join(namespaceDir, name))
 		if err != nil {
-			errs = append(errs, fmt.Errorf("read namespace %q: %w", namespace, err))
+			errs = append(errs, fmt.Errorf("inspect workspace %q/%q: %w", namespace, name, err))
+			continue
+		}
+		if !recoverable {
 			continue
 		}
 
-		for _, workspaceEntry := range workspaceEntries {
-			if !workspaceEntry.IsDir() {
-				continue
-			}
-			name := strings.TrimSpace(workspaceEntry.Name())
-			if name == "" || strings.HasPrefix(name, ".") {
-				continue
-			}
-			if err := validateName(name); err != nil {
-				errs = append(errs, fmt.Errorf("skip workspace %q/%q: %w", namespace, name, err))
-				continue
-			}
-			recoverable, err := isRecoverableWorkspaceDir(filepath.Join(namespaceDir, name))
-			if err != nil {
-				errs = append(errs, fmt.Errorf("inspect workspace %q/%q: %w", namespace, name, err))
-				continue
-			}
-			if !recoverable {
-				continue
-			}
-
-			if err := m.recoverWorkspace(ctx, namespace, name); err != nil {
-				errs = append(errs, fmt.Errorf("%s/%s: %w", namespace, name, err))
-				continue
-			}
-			recovered++
+		if err := m.recoverWorkspace(ctx, namespace, name); err != nil {
+			errs = append(errs, fmt.Errorf("%s/%s: %w", namespace, name, err))
+			continue
 		}
+		recovered++
 	}
 
 	return recovered, errors.Join(errs...)
@@ -97,6 +78,9 @@ func (m *Manager) recoverWorkspace(ctx context.Context, namespace, name string) 
 	spec, err := m.launcher.WorkspacePaths(namespace, name)
 	if err != nil {
 		return err
+	}
+	if err := m.bindManagerProxyAccess(namespace, name, &spec); err != nil {
+		return fmt.Errorf("prepare manager proxy access: %w", err)
 	}
 
 	metadata, err := m.loadWorkspaceMetadata(spec.StateDir, namespace, name)

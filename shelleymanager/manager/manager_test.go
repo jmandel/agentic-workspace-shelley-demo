@@ -176,6 +176,153 @@ func TestManagerCreateAndProxyRoutes(t *testing.T) {
 	}
 }
 
+func TestManagerRegistersWorkspaceToolAsManagedProxy(t *testing.T) {
+	var createBodies []string
+	var getBodies []string
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/ws/health":
+			io.WriteString(w, `{"status":"ok"}`)
+		case r.URL.Path == "/ws/topics" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{"name":"bp-panel-validator"}`)
+		case r.URL.Path == "/ws/tools" && r.Method == http.MethodPost:
+			body, _ := io.ReadAll(r.Body)
+			createBodies = append(createBodies, string(body))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{"name":"hl7-jira","protocol":"mcp","transport":{"type":"manager_proxy"},"tools":[{"name":"jira.search"}]}`)
+		case r.URL.Path == "/ws/tools/hl7-jira" && r.Method == http.MethodGet:
+			body, _ := io.ReadAll(r.Body)
+			getBodies = append(getBodies, string(body))
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"name":"hl7-jira","protocol":"mcp","transport":{"type":"manager_proxy"},"tools":[{"name":"jira.search"}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer runtime.Close()
+
+	runtimeURL, err := url.Parse(runtime.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stateRoot := t.TempDir()
+	supportRoot := filepath.Join(stateRoot, "catalog", "hl7-jira-support")
+	if err := os.MkdirAll(filepath.Join(supportRoot, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(supportRoot, "bin", "hl7-jira-mcp.js"), []byte("#!/usr/bin/env bun\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(supportRoot, "data"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(supportRoot, "data", "jira-data.db"), []byte("sqlite"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	launcher := &fakeLauncher{
+		baseDir: stateRoot,
+		runtime: &Runtime{
+			Name:    "bp-ig-fix",
+			APIBase: runtimeURL,
+			Mode:    "fake",
+			Health:  func(context.Context) error { return nil },
+			Stop:    func(context.Context) error { return nil },
+		},
+	}
+	mgr, err := New(Config{
+		DefaultNamespace: "acme",
+		Launcher:         launcher,
+		StateRoot:        stateRoot,
+		LocalTools: []LocalTool{
+			{
+				Name:        "hl7-jira-support",
+				Exposure:    localToolExposureSupportBundle,
+				Description: "Jira MCP support bundle",
+				HostRoot:    supportRoot,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr.SetInternalBaseURL("http://127.0.0.1:31337")
+	server := httptest.NewServer(mgr)
+	defer server.Close()
+
+	createBody := `{"name":"bp-ig-fix","topics":[{"name":"bp-panel-validator"}],"runtime":{"localTools":["hl7-jira-support"]}}`
+	res, err := http.Post(server.URL+"/apis/v1/namespaces/acme/workspaces", "application/json", strings.NewReader(createBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d", res.StatusCode)
+	}
+
+	registerRes, err := http.Post(server.URL+"/apis/v1/namespaces/acme/workspaces/bp-ig-fix/tools", "application/json", strings.NewReader(`{
+		"name":"hl7-jira",
+		"description":"Search the real HL7 Jira snapshot",
+		"protocol":"mcp",
+		"provider":"demo@acme.example",
+		"credentialRef":"secret://jira/demo",
+		"transport":{
+			"type":"stdio",
+			"command":"bun",
+			"args":["/tools/hl7-jira-support/bin/hl7-jira-mcp.js"],
+			"cwd":"/tools/hl7-jira-support",
+			"env":{"HL7_JIRA_DB":"/tools/hl7-jira-support/data/jira-data.db"}
+		},
+		"tools":[{"name":"jira.search"}]
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registerRes.Body.Close()
+	if registerRes.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(registerRes.Body)
+		t.Fatalf("register status = %d body=%s", registerRes.StatusCode, string(body))
+	}
+	detailBody, err := io.ReadAll(registerRes.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(detailBody), `"command":"bun"`) || !strings.Contains(string(detailBody), `"/tools/hl7-jira-support/bin/hl7-jira-mcp.js"`) {
+		t.Fatalf("expected public tool detail to preserve original transport, got %s", string(detailBody))
+	}
+	if strings.Contains(string(detailBody), `"type":"manager_proxy"`) {
+		t.Fatalf("expected public tool detail to hide manager_proxy, got %s", string(detailBody))
+	}
+
+	if len(createBodies) != 1 {
+		t.Fatalf("expected one runtime tool create, got %d", len(createBodies))
+	}
+	if !strings.Contains(createBodies[0], `"type":"manager_proxy"`) {
+		t.Fatalf("expected runtime tool create to use manager_proxy, got %s", createBodies[0])
+	}
+	if strings.Contains(createBodies[0], "hl7-jira-support") || strings.Contains(createBodies[0], "secret://jira/demo") {
+		t.Fatalf("expected runtime tool create to avoid leaking host transport details, got %s", createBodies[0])
+	}
+	if len(getBodies) == 0 {
+		t.Fatalf("expected manager to fetch runtime detail after create")
+	}
+
+	bindingPath := filepath.Join(stateRoot, managerPrivateStateDir, "acme", "bp-ig-fix", "tools", "hl7-jira.json")
+	bindingRaw, err := os.ReadFile(bindingPath)
+	if err != nil {
+		t.Fatalf("read managed tool binding: %v", err)
+	}
+	if !strings.Contains(string(bindingRaw), `"command": "bun"`) {
+		t.Fatalf("expected managed binding to retain bun transport, got %s", string(bindingRaw))
+	}
+	if !strings.Contains(string(bindingRaw), supportRoot) || !strings.Contains(string(bindingRaw), `"credentialRef": "secret://jira/demo"`) {
+		t.Fatalf("expected managed binding to retain resolved host transport and credential ref, got %s", string(bindingRaw))
+	}
+}
+
 func TestManagerCompatibilityRoutes(t *testing.T) {
 	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -754,6 +901,87 @@ func TestManagerRecoverPersistedWorkspaces(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"template": "acme-rpm-ig"`) {
 		t.Fatalf("expected metadata to preserve template, got %s", raw)
+	}
+}
+
+func TestManagerRecoverWorkspacesIgnoresOtherNamespaces(t *testing.T) {
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ws/health" {
+			io.WriteString(w, `{"status":"ok"}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer runtime.Close()
+	runtimeURL, _ := url.Parse(runtime.URL)
+
+	stateRoot := t.TempDir()
+	otherStateDir := filepath.Join(stateRoot, "other", "ignored")
+	if err := os.MkdirAll(filepath.Join(otherStateDir, "workspace"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(otherStateDir, workspaceMetadataFilename), []byte(`{"namespace":"other","name":"ignored"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	launcher := &fakeLauncher{
+		baseDir: stateRoot,
+		runtime: &Runtime{
+			Name:    "ignored",
+			APIBase: runtimeURL,
+			Mode:    "fake",
+			Health:  func(context.Context) error { return nil },
+			Stop:    func(context.Context) error { return nil },
+		},
+	}
+	mgr, err := New(Config{DefaultNamespace: "acme", Launcher: launcher, StateRoot: stateRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recovered, err := mgr.RecoverWorkspaces(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered != 0 {
+		t.Fatalf("expected no recovered workspaces outside default namespace, got %d", recovered)
+	}
+	if len(launcher.launches) != 0 {
+		t.Fatalf("expected no runtime launches for ignored namespaces, got %d", len(launcher.launches))
+	}
+}
+
+func TestManagerRejectsNonDefaultNamespaceRoutes(t *testing.T) {
+	launcher := &fakeLauncher{
+		baseDir: t.TempDir(),
+		runtime: &Runtime{
+			Name:    "demo",
+			APIBase: &url.URL{Scheme: "http", Host: "example.invalid"},
+			Mode:    "fake",
+			Health:  func(context.Context) error { return nil },
+			Stop:    func(context.Context) error { return nil },
+		},
+	}
+	mgr, err := New(Config{DefaultNamespace: "acme", Launcher: launcher})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(mgr)
+	defer server.Close()
+
+	for _, path := range []string{
+		"/apis/v1/namespaces/other/workspaces",
+		"/apis/v1/namespaces/other/workspaces/demo",
+		"/acp/other/demo/topics/general",
+	} {
+		res, err := http.Get(server.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		res.Body.Close()
+		if res.StatusCode != http.StatusNotFound {
+			t.Fatalf("expected 404 for %s, got %d", path, res.StatusCode)
+		}
 	}
 }
 

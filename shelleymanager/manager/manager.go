@@ -33,9 +33,12 @@ type Manager struct {
 	localTools       []LocalTool
 	stateRoot        string
 	logger           *slog.Logger
+	internalBaseURL  string
 
 	mu         sync.RWMutex
 	workspaces map[workspaceKey]*Workspace
+
+	events *EventHub
 }
 
 type workspaceKey struct {
@@ -74,6 +77,8 @@ type LaunchSpec struct {
 	WorkspaceDir string
 	DBPath       string
 	LocalTools   []LocalTool
+	ManagerURL   string
+	ManagerToken string
 }
 
 type workspaceCreateRequest struct {
@@ -136,6 +141,7 @@ func New(cfg Config) (*Manager, error) {
 		stateRoot:        strings.TrimSpace(cfg.StateRoot),
 		logger:           logger,
 		workspaces:       map[workspaceKey]*Workspace{},
+		events:           newEventHub(),
 	}, nil
 }
 
@@ -149,8 +155,8 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.handleApp(w, r)
 	case strings.HasPrefix(r.URL.Path, "/shelley/"):
 		m.handleShelleyUIRedirect(w, r)
-	case r.URL.Path == "/demo-assets/hl7-jira-mcp.js":
-		m.handleDemoJiraScript(w, r)
+	case strings.HasPrefix(r.URL.Path, "/internal/"):
+		m.handleInternal(w, r)
 	case r.URL.Path == "/health":
 		m.handleHealth(w, r)
 	case r.URL.Path == "/apis/v1/local-tools":
@@ -169,6 +175,8 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *Manager) Shutdown(ctx context.Context) error {
+	m.events.closeAll()
+
 	m.mu.Lock()
 	workspaces := make([]*Workspace, 0, len(m.workspaces))
 	for _, ws := range m.workspaces {
@@ -270,6 +278,19 @@ func (m *Manager) handleCompatWorkspace(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Intercept topic create/delete to emit lifecycle events (RFC 0009).
+	if len(parts) == 2 && parts[1] == "topics" && r.Method == http.MethodPost {
+		m.createTopicDirect(w, r, ws, m.defaultNamespace)
+		return
+	}
+	if len(parts) == 3 && parts[1] == "topics" && r.Method == http.MethodDelete {
+		m.deleteTopicDirect(w, r, ws, m.defaultNamespace, parts[2])
+		return
+	}
+	if m.handleWorkspaceToolsRoute(w, r, ws, parts[1:]) {
+		return
+	}
+
 	runtimePath := "/ws/" + strings.Join(parts[1:], "/")
 	m.proxyRuntime(w, r, ws, runtimePath)
 }
@@ -284,6 +305,10 @@ func (m *Manager) handleNamespaced(w http.ResponseWriter, r *http.Request) {
 	namespace := parts[3]
 	if err := validateName(namespace); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if namespace != m.defaultNamespace {
+		http.NotFound(w, r)
 		return
 	}
 
@@ -326,12 +351,33 @@ func (m *Manager) handleNamespaced(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+
+	// Intercept topic create/delete to emit lifecycle events (RFC 0009).
+	if len(parts) == 7 && parts[6] == "topics" && r.Method == http.MethodPost {
+		m.createTopicDirect(w, r, ws, namespace)
+		return
+	}
+	if len(parts) == 8 && parts[6] == "topics" && r.Method == http.MethodDelete {
+		m.deleteTopicDirect(w, r, ws, namespace, parts[7])
+		return
+	}
+	if m.handleWorkspaceToolsRoute(w, r, ws, parts[6:]) {
+		return
+	}
+
 	runtimePath := "/ws/" + strings.Join(parts[6:], "/")
 	m.proxyRuntime(w, r, ws, runtimePath)
 }
 
 func (m *Manager) handleACP(w http.ResponseWriter, r *http.Request) {
 	parts := splitPath(strings.TrimPrefix(r.URL.Path, "/"))
+
+	// /acp/{namespace}/events — manager lifecycle event stream (RFC 0009)
+	if len(parts) == 3 && parts[0] == "acp" && parts[2] == "events" {
+		m.handleEvents(w, r, parts[1])
+		return
+	}
+
 	if len(parts) != 5 || parts[0] != "acp" || parts[3] != "topics" {
 		http.NotFound(w, r)
 		return
@@ -341,6 +387,10 @@ func (m *Manager) handleACP(w http.ResponseWriter, r *http.Request) {
 	topic := parts[4]
 	if err := validateName(namespace); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if namespace != m.defaultNamespace {
+		http.NotFound(w, r)
 		return
 	}
 	if err := validateName(name); err != nil {
@@ -409,6 +459,11 @@ func (m *Manager) createWorkspace(w http.ResponseWriter, r *http.Request, namesp
 		http.Error(w, "workspace state already exists", http.StatusConflict)
 		return
 	}
+	if err := m.bindManagerProxyAccess(namespace, req.Name, &spec); err != nil {
+		m.logger.Error("failed to prepare manager proxy access", "namespace", namespace, "name", req.Name, "error", err)
+		http.Error(w, "failed to prepare workspace manager access", http.StatusInternalServerError)
+		return
+	}
 	spec.LocalTools = append([]LocalTool(nil), localTools...)
 	if err := seedWorkspaceTemplate(spec.WorkspaceDir, req.Template); err != nil {
 		m.logger.Error("failed to seed workspace template", "namespace", namespace, "name", req.Name, "template", req.Template, "error", err)
@@ -452,6 +507,21 @@ func (m *Manager) createWorkspace(w http.ResponseWriter, r *http.Request, namesp
 		m.logger.Error("failed to persist workspace metadata", "namespace", namespace, "name", req.Name, "error", err)
 	}
 
+	// Emit lifecycle events (RFC 0009).
+	topicRefs := make([]map[string]string, 0, len(topics))
+	for _, t := range topics {
+		topicRefs = append(topicRefs, map[string]string{"name": t})
+	}
+	m.events.emit(namespace, "workspace_created", map[string]any{
+		"workspace": map[string]any{
+			"name":      ws.Name,
+			"status":    "running",
+			"template":  ws.Template,
+			"createdAt": ws.CreatedAt.Format(time.RFC3339),
+			"topics":    topicRefs,
+		},
+	})
+
 	if compat {
 		writeJSON(w, http.StatusCreated, m.compatDetail(r, ws, topics))
 		return
@@ -471,6 +541,12 @@ func (m *Manager) deleteWorkspace(w http.ResponseWriter, r *http.Request, namesp
 		http.NotFound(w, r)
 		return
 	}
+
+	// Emit lifecycle event (RFC 0009) before stopping runtime.
+	m.events.emit(namespace, "workspace_deleted", map[string]any{
+		"workspace": map[string]any{"name": name},
+	})
+
 	if ws.Runtime.Stop != nil {
 		if err := ws.Runtime.Stop(r.Context()); err != nil {
 			m.logger.Error("failed to stop workspace runtime", "namespace", namespace, "name", name, "error", err)
@@ -484,6 +560,11 @@ func (m *Manager) deleteWorkspace(w http.ResponseWriter, r *http.Request, namesp
 			http.Error(w, "failed to remove workspace state", http.StatusInternalServerError)
 			return
 		}
+	}
+	if err := m.deleteWorkspaceManagerState(namespace, name); err != nil {
+		m.logger.Error("failed to remove workspace manager state", "namespace", namespace, "name", name, "error", err)
+		http.Error(w, "failed to remove workspace manager state", http.StatusInternalServerError)
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name":   name,
@@ -541,6 +622,75 @@ func (m *Manager) ensureTopics(ctx context.Context, ws *Workspace, topics []stri
 		}
 	}
 	return nil
+}
+
+func (m *Manager) createTopicDirect(w http.ResponseWriter, r *http.Request, ws *Workspace, namespace string) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, ws.Runtime.APIBase.String()+"/ws/topics", bytes.NewReader(body))
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		http.Error(w, "runtime unavailable", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	copyHeaders(w.Header(), resp.Header)
+	w.WriteHeader(resp.StatusCode)
+	w.Write(respBody)
+
+	if resp.StatusCode == http.StatusCreated {
+		var created struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(respBody, &created) == nil && created.Name != "" {
+			m.events.emit(namespace, "topic_created", map[string]any{
+				"workspace": ws.Name,
+				"topic":     map[string]any{"name": created.Name},
+			})
+		}
+	}
+}
+
+func (m *Manager) deleteTopicDirect(w http.ResponseWriter, r *http.Request, ws *Workspace, namespace, topicName string) {
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodDelete, ws.Runtime.APIBase.String()+"/ws/topics/"+topicName, nil)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		http.Error(w, "runtime unavailable", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	copyHeaders(w.Header(), resp.Header)
+	w.WriteHeader(resp.StatusCode)
+	w.Write(respBody)
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		m.events.emit(namespace, "topic_deleted", map[string]any{
+			"workspace": ws.Name,
+			"topic":     map[string]any{"name": topicName},
+		})
+	}
+}
+
+func copyHeaders(dst, src http.Header) {
+	for k, vv := range src {
+		for _, v := range vv {
+			dst.Add(k, v)
+		}
+	}
 }
 
 func (m *Manager) runtimeTopics(ctx context.Context, ws *Workspace) []runtimeTopicInfo {

@@ -2,6 +2,27 @@
 
 ## 2026-03-10
 
+### 2026-03-10 update — Anthropic workspace-tool schema compatibility
+- Real Anthropic runs exposed a runtime bug that predictable mode never surfaced:
+  - Shelley's workspace-tool wrapper emitted a top-level `oneOf` in the LLM-facing input schema.
+  - Anthropic rejected that with `input_schema does not support oneOf, allOf, or anyOf at the top level`.
+- Fixed `server/workspace_runtime_tools.go` so workspace-managed tools now expose:
+  - a single Anthropic-safe object schema
+  - strongly typed `input` when only one action is visible
+  - descriptive multi-action guidance instead of a top-level schema union when multiple actions are visible
+- Added/updated Shelley server tests to lock this in:
+  - runtime schemas no longer contain top-level `oneOf`
+  - single-action visible grants still carry the relevant action fields through to the runtime schema
+
+### 2026-03-10 update — model profile launcher cleanup
+- `shelleymanager/Makefile` now supports easy model swaps for demo/dev:
+  - `make dev-predictable`
+  - `make dev-claude` for `claude-sonnet-4.6`
+  - `make dev-haiku` for `claude-haiku-4.5`
+- Important naming note:
+  - Shelley currently supports `claude-sonnet-4.6` and `claude-haiku-4.5`.
+  - It does **not** currently expose `claude-haiku-4.6`, and Anthropic's current public model docs likewise list Haiku 4.5 rather than 4.6.
+
 ### Scope chosen
 - Re-read `docs/plan.md` against the checked-out `shelley` and `agentic-workspace` repos before coding.
 - Did not start with the full workspace-spec surface from the draft. The Bun reference implementation and CLI only require a much smaller real interface first: `GET /health`, `GET|POST /topics`, `GET|DELETE /topics/{name}`, and `WS /acp/{topic}`.
@@ -253,7 +274,7 @@
   - `SetTools()` was required for real next-turn behavior
   - `SetSystem()` is not required yet for correctness
   - new topic conversations do include workspace tools in their initial system-message display metadata because the extra tools are loaded before first hydrate
-  - existing conversations' persisted system-message display metadata is still not rewritten when tools change
+  - existing conversations only get their persisted system-message display metadata refreshed if tool availability changes before the first real conversation turn; after a turn exists, the stored prompt metadata is left alone
 
 ### Surprise caught during this slice
 - My first pass moved topic tool refresh ahead of the point where the topic marked itself busy for a turn.
@@ -1078,3 +1099,156 @@
     JAR
   - CLI replay includes real validator output, not a fixture string
   - the same path works in both process and `bwrap` runtime modes
+
+### 2026-03-10 update — fuller `ws` usage/help output
+- The old parser error path still returned a terse one-line usage string with a
+  trailing `...`, even though `ws help` already had a much richer guide.
+- Fixed the predictable-model help surface so:
+  - `ws`
+  - `ws help`
+  - `ws usage`
+  - `ws tutorial`
+  all return the full in-chat guide
+- Invalid `ws` commands now also return the full guide, prefixed by the specific
+  parse error, instead of only the old one-line `ws usage: ...` stub.
+- Updated the manager-hosted tutorial page and the demo runbook to lean on this
+  as an on-stage recovery path when improvising.
+
+### 2026-03-10 update — tool results stay on `tool_update`
+- Found a real WS contract bug during live demo exercise:
+  - `tool_update` only carried status
+  - the human-readable tool output was emitted as a separate `text` event
+  - the demo UI therefore showed `pending` / `failed` in the tool box, but the
+    actual validator output appeared as a plain Shelley message
+- Fixed the contract and the clients together:
+  - `tool_update.data` is now the canonical human-readable tool result field for
+    the demo profile
+  - `tool_call` and `tool_update` now carry `promptId` when Shelley can
+    associate them with a prompt
+  - the Shelley adapter no longer emits a duplicate assistant `text` event for
+    the same tool result payload
+  - the manager inline topic page, the React manager UI, and the Bun CLI now
+    all render tool output from `tool_update.data`
+- Updated RFC 0002 in `agentic-workspace/rfcs/0002-topic-realtime-wire-contract.md`
+  to match:
+  - `tool_update.data` is canonical for human-readable tool output
+  - the demo profile should not emit a duplicate `text` event for the same
+    payload
+- Added stronger regression coverage:
+  - translation-level test for `tool_update.data`
+  - topic-websocket test proving tool output stays on `tool_update` and does not
+    leak as assistant text
+
+### 2026-03-10 update — persistence-gated injects and single-namespace manager
+- Tightened Shelley prompt acceptance so durable recording is now a hard
+  precondition:
+  - if immediate user-message persistence fails, the runtime returns an error
+    and does not queue the turn
+  - injects now emit `accepted` only after that durable write succeeds
+  - inject persistence failure produces a clean rejection instead of an
+    optimistic `accepted` / `delivered` sequence for a non-durable message
+- Added missing regressions:
+  - direct `AcceptUserMessage` test proving no LLM request is queued when the
+    immediate record write fails
+  - websocket inject test proving persistence failure rejects the inject without
+    an `accepted` event
+- Simplified `shelleymanager` back to one configured namespace for now:
+  - startup recovery only scans the configured default namespace on disk
+  - namespaced manager and ACP routes reject any other namespace instead of
+    silently coexisting with hidden state
+- Refined RFC 0007 to match reality:
+  - ordering guarantees now apply only to sequential messages sent on the same
+    websocket connection
+  - `inject_status: accepted` now explicitly means durably recorded + queued,
+    not merely received by the server
+
+### 2026-03-10 update — dev launcher now matches the demo stack
+- The old `shelleymanager` `make dev` / `make run` targets were not actually
+  launching the same stack we were testing elsewhere:
+  - no `-tools-dir`, so the manager published no local tool catalog
+  - default process mode instead of `bwrap`
+  - relative `state-dir`, which let relative `HOME` / `TMPDIR` leak into
+    process-mode runtimes and produce odd shell-init behavior
+- Updated the `Makefile` defaults so local development now matches the smoke
+  path much more closely:
+  - absolute `STATE_DIR`
+  - `NAMESPACE=acme`
+  - `RUNTIME_MODE=bwrap`
+  - `TOOLS_DIR=../test/fixtures/local-tools`
+  - predictable-only runtime by default
+- Restarted the live `31337` demo manager on that corrected configuration and
+  verified:
+  - `GET /apis/v1/local-tools` publishes `fhir-validator`
+  - created workspaces launch under `bwrap`
+  - runtime `HOME` is now `/sandbox/home`, not a relative path
+
+### 2026-03-10 update — easy local swap between predictable and Claude
+- The local `shelleymanager` Makefile now exposes launch profiles instead of
+  making model selection depend on hand-editing `MODEL` plus
+  `PREDICTABLE_ONLY`.
+- Current profiles:
+  - `PROFILE=predictable` -> `--default-model predictable --predictable-only`
+  - `PROFILE=claude-sonnet-4.6` -> `--default-model claude-sonnet-4.6`
+- Added convenience targets:
+  - `make dev-predictable`
+  - `make dev-claude`
+  - `make dev-haiku`
+- `make dev PROFILE=claude-sonnet-4.6` now fails fast unless
+  `ANTHROPIC_API_KEY` is present in the manager environment.
+- Important naming note:
+  - the current Shelley checkout exposes `claude-haiku-4.5`, not
+    `claude-haiku-4.6`, so the Haiku profile tracks the real built-in model ID
+    instead of inventing a new one in the manager Makefile
+- Important runtime note:
+  - the selected manager profile cleanly controls new workspace/topic runtimes
+  - existing topic conversations still persist their own model choice, so
+    swapping profiles is cleanest with a fresh workspace/topic unless we add an
+    explicit manager-side model mutation path later
+
+### 2026-03-10 update — manager-brokered MCP for the demo Jira tool
+- To avoid storing real MCP launch/binding details inside the Shelley runtime,
+  the demo `hl7-jira` tool now uses a manager-brokered path.
+- The Shelley Manager:
+  - stores the full MCP binding outside the mounted workspace state
+  - exposes an internal invoke endpoint keyed by a workspace-scoped token
+  - registers only a sanitized `manager_proxy` transport inside Shelley
+- Shelley runtime behavior:
+  - `workspace_hl7-jira` still appears as a first-class tool to the LLM
+  - actual execution becomes an HTTP callback to the manager, even when the
+    underlying tool is stdio MCP
+- This is an internal implementation detail, not a public protocol change.
+- Security boundary improvement:
+  - the workspace no longer needs the real MCP command/cwd/env config for the
+    demo Jira tool
+  - this does not yet solve approval-bypass concerns for a malicious agent with
+    access to the workspace-scoped invoke token; it does narrow the main secret
+    exposure path by keeping the real binding out of the workspace DB/files
+
+### 2026-03-10 update — generic manager-brokered `/tools` and real Jira data
+- Removed the one-off `POST .../demo-tools/hl7-jira` manager shortcut.
+- The public workspace tools API is now the real path for the demo:
+  - browser/CLI call `POST /apis/v1/namespaces/{ns}/workspaces/{name}/tools`
+  - manager stores the full MCP binding privately
+  - manager registers only a sanitized `manager_proxy` transport inside Shelley
+  - `GET /tools` and `GET /tools/{tool}` overlay the original public transport
+    back onto the manager response so clients do not see `manager_proxy`
+- Extended the manager-published local tool catalog with a second exposure mode:
+  - `bash_only` for end-user local commands like `fhir-validator`
+  - `support_bundle` for mounted assets that are not direct bash tools
+- Added `hl7-jira-support` as a real support bundle:
+  - Bun MCP entrypoint script at `/tools/hl7-jira-support/bin/hl7-jira-mcp.js`
+  - real Jira SQLite snapshot downloaded from
+    `jmandel/fhir-community-search` release `jira-latest`
+  - mounted read-only into the workspace runtime and translated back to host
+    paths when the manager executes the brokered MCP call
+- Local tool catalog implementation notes:
+  - added gzip artifact support with checksum validation for downloaded bundles
+  - support bundles no longer appear in Shelley’s local-tool guidance file,
+    which now stays focused on bash-visible tools
+- Real demo behavior now validated end to end:
+  - real FHIR validator JAR against the seeded broken Patient/Observation JSON
+  - late-join replay of validator output
+  - generic `POST /tools` registration of `hl7-jira`
+  - manager-brokered Bun MCP execution against the real Jira DB
+  - queueing, queue edits/moves, and browser queue UI still passing in the same
+    smoke run

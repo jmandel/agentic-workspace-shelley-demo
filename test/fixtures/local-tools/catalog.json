@@ -2,6 +2,7 @@
   {
     "name": "fhir-validator",
     "version": "6.8.2",
+    "exposure": "bash_only",
     "description": "Real FHIR Validator CLI wrapper for validating example JSON resources in the blood pressure workspace.",
     "guidance": "Use `fhir-validator input/examples/Patient-bp-alice-smith.json input/examples/Observation-bp-alice-morning.json` through bash. The wrapper runs the real validator JAR with `-version 4.0.1 -tx n/a` by default.",
     "requirements": ["java"],
@@ -16,6 +17,22 @@
         "url": "https://github.com/hapifhir/org.hl7.fhir.core/releases/download/6.8.2/validator_cli.jar",
         "relativePath": "validator_cli.jar",
         "sha256": "b7e3de5494c6ea18e753942c1dea1aa37e6fa2b47ea30cfc046dc5b707104868"
+      }
+    ]
+  },
+  {
+    "name": "hl7-jira-support",
+    "version": "2026-01-22",
+    "exposure": "support_bundle",
+    "description": "Support bundle for the HL7 Jira MCP server, including the Bun entrypoint and the real FHIR community search SQLite snapshot.",
+    "root": "hl7-jira-support",
+    "artifacts": [
+      {
+        "url": "https://github.com/jmandel/fhir-community-search/releases/download/jira-latest/jira-data.db.gz",
+        "relativePath": "data/jira-data.db",
+        "compression": "gzip",
+        "sourceSha256": "e72ac7ba8ef72f0e95d912f39fd86cd31e53baf9e8991fa1f81d2ae8285c77b2",
+        "sha256": "1e045bdc5385745ce12cb057f9a935ca506b9f9940c24288ab90482772d800a9"
       }
     ]
   }

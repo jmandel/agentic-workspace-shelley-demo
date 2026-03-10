@@ -64,6 +64,18 @@ Use these exact demo values every time.
 - repo/template label in the create form: `acme-rpm-ig`
 - topic name: `bp-example-validator`
 
+## On-Stage Safety Net
+
+If the presenter needs a live reminder of the predictable demo syntax, type one
+of these directly into the topic:
+
+- `ws`
+- `ws help`
+- `ws usage`
+
+Each returns the full in-chat WS language guide, including the exact validator,
+Jira, and fix-up commands used in this demo.
+
 ## Tool Model In This Demo
 
 The mainline demo should show only two tool paths.
@@ -93,10 +105,12 @@ Main demo example:
 
 Important narration point:
 
-- the MCP tool runs inside the bubblewrapped Shelley runtime
-- in this demo, the MCP tool is a Bun script written into the workspace and run
-  with `bun`
-- in production, many stdio MCP tools will use `npx`, but that is not this demo
+- Shelley sees `hl7-jira` as a first-class workspace tool
+- the real MCP binding is held by the Shelley Manager, not the workspace runtime
+- in this demo, the manager runs a Bun MCP server script on the host side and
+  brokers calls to it over an internal HTTP bridge
+- this keeps the MCP transport details out of the workspace while still giving
+  Shelley the tool shape it needs
 
 Example configuration shape:
 
@@ -104,10 +118,7 @@ Example configuration shape:
 {
   "protocol": "mcp",
   "transport": {
-    "type": "stdio",
-    "command": "bun",
-    "args": ["./.demo/hl7-jira-mcp.js"],
-    "cwd": "."
+    "type": "manager_proxy"
   }
 }
 ```
@@ -124,7 +135,9 @@ unless approval itself is the headline feature we want to emphasize.
 The demo should make one thing very clear:
 
 - `fhir-validator` is not created through the workspace tools API
-- `hl7-jira` is created through the workspace tools API
+- `hl7-jira` is created through the normal workspace tools API
+- the manager brokers the real MCP transport behind that API without exposing
+  its executable/db details to Shelley
 
 The two setup paths are intentionally different.
 
@@ -140,6 +153,7 @@ GET /apis/v1/local-tools
 Expected result for the demo:
 
 - `fhir-validator`
+- `hl7-jira-support`
 - optionally `ig-publisher`
 
 The point is that the string name is not opaque manager magic. The manager
@@ -163,7 +177,7 @@ Content-Type: application/json
     { "name": "bp-example-validator" }
   ],
   "runtime": {
-    "localTools": ["fhir-validator"]
+    "localTools": ["fhir-validator", "hl7-jira-support"]
   }
 }
 ```
@@ -174,32 +188,16 @@ Meaning:
   registration surface
 - for the main demo, this is how `fhir-validator` becomes available inside the
   bubblewrapped workspace
+- `hl7-jira-support` is a manager-published support bundle, not a first-class
+  bash tool; it mounts the Bun MCP entrypoint and the real Jira SQLite snapshot
+  at stable `/tools/hl7-jira-support/...` paths
 - the manager should also write workspace guidance so Shelley knows that
   `fhir-validator` is available through bash at a known path such as
   `/tools/bin/fhir-validator`
 
-### 2. Write the Bun MCP fixture into the workspace
+### 2. Register the Jira MCP tool through the workspace tools API
 
-This is a workspace runtime file API call, exposed publicly through the manager.
-
-```http
-PUT /apis/v1/namespaces/acme/workspaces/bp-ig-fix/files/.demo/hl7-jira-mcp.js
-Content-Type: text/plain
-
-...SDK-backed Bun MCP server source...
-```
-
-Meaning:
-
-- the demo MCP fixture lives in the workspace itself
-- the fixture uses the official MCP JavaScript SDK plus `bun:sqlite`
-- Shelley later launches it inside the bubblewrapped runtime with `bun`
-
-### 3. Register the MCP tool through the workspace tools API
-
-This is a workspace runtime API call, exposed publicly through the manager.
-
-For the demo, only `hl7-jira` should be registered this way.
+This is the public manager-proxied workspace tools API call.
 
 ```http
 POST /apis/v1/namespaces/acme/workspaces/bp-ig-fix/tools
@@ -207,24 +205,28 @@ Content-Type: application/json
 
 {
   "name": "hl7-jira",
-  "description": "Search HL7 Jira fixture data",
+  "description": "Search the real HL7 Jira snapshot",
   "provider": "demo@acme.example",
   "protocol": "mcp",
   "transport": {
     "type": "stdio",
     "command": "bun",
-    "args": ["./.demo/hl7-jira-mcp.js"],
-    "cwd": "."
+    "args": ["/tools/hl7-jira-support/bin/hl7-jira-mcp.js"],
+    "cwd": "/tools/hl7-jira-support",
+    "env": {
+      "HL7_JIRA_DB": "/tools/hl7-jira-support/data/jira-data.db"
+    }
   },
   "tools": [
     {
       "name": "jira.search",
       "title": "Search HL7 Jira",
-      "description": "Search HL7 Jira issues related to FHIR validator behavior",
+      "description": "Search HL7 Jira issues related to validator behavior",
       "inputSchema": {
         "type": "object",
         "properties": {
-          "query": { "type": "string" }
+          "query": { "type": "string" },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 10 }
         },
         "required": ["query"],
         "additionalProperties": false
@@ -234,9 +236,18 @@ Content-Type: application/json
 }
 ```
 
-### 4. Grant the agent access to the MCP tool
+Meaning:
 
-This is also a workspace runtime API call, exposed through the manager.
+- the client tells the server a normal MCP binding
+- the manager stores the real transport binding outside the workspace runtime
+- the manager registers a sanitized internal `manager_proxy` transport inside
+  Shelley
+- Shelley learns the tool shape, but not the real launch details
+
+### 3. Grant the agent access to the MCP tool
+
+This is also an internal workspace runtime API call, issued by the manager for
+the demo setup.
 
 ```http
 POST /apis/v1/namespaces/acme/workspaces/bp-ig-fix/tools/hl7-jira/grants
@@ -269,19 +280,19 @@ Meaning:
 ### `hl7-jira`
 
 - kind: MCP stdio workspace tool
-- implementation: SDK-backed Bun MCP fixture launched inside the bubblewrapped
-  runtime with `bun ./.demo/hl7-jira-mcp.js`
-- backing data: a tiny SQLite database created inside `.demo/` on first run
-- purpose: search a small fixture set of HL7 Jira issues derived from
-  `fhir-community-search`
+- implementation: SDK-backed Bun MCP server launched by Shelley Manager against
+  the mounted `hl7-jira-support` bundle
+- backing data: the real `fhir-community-search` Jira SQLite snapshot mounted at
+  `/tools/hl7-jira-support/data/jira-data.db`
+- purpose: search real HL7 Jira issues derived from `fhir-community-search`
 - tool name exposed through MCP: `jira.search`
 
-Fixture results should include:
+Typical results for the demo query `validation error handling` include:
 
-- `FHIR-53953`
-  - title: `No documentation on remote interactions - timeouts, error handling, caching, performance etc.`
-- `FHIR-53960`
-  - title: `Additional Functions - Inconsistent error handling patterns`
+- `FHIR-20482`
+  - title: `FHIRPath conformsTo Validation of Warnings/Error handling pull request`
+- `FHIR-31991`
+  - title: `Specify behavior for incorrect type returned by expressions`
 
 ## Starting Files
 
@@ -460,13 +471,13 @@ Marco types this exact prompt in the CLI:
 
 > Search HL7 Jira for issues about validator error handling for bad codes and invalid dates in example resources.
 
-Shelley invokes the MCP stdio tool `hl7-jira`, specifically the MCP tool
-`jira.search`.
+Shelley invokes the manager-brokered MCP tool `hl7-jira`, specifically the MCP
+tool `jira.search`.
 
-The fixture returns:
+The real Jira snapshot returns results like:
 
-- `FHIR-53953` — `No documentation on remote interactions - timeouts, error handling, caching, performance etc.`
-- `FHIR-53960` — `Additional Functions - Inconsistent error handling patterns`
+- `FHIR-20482` — `FHIRPath conformsTo Validation of Warnings/Error handling pull request`
+- `FHIR-31991` — `Specify behavior for incorrect type returned by expressions`
 
 Shelley summarizes:
 

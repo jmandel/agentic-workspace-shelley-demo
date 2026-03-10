@@ -102,16 +102,14 @@ func main() {
 		logger.Error("failed to create state dir", "path", cfg.StateDir, "error", err)
 		os.Exit(1)
 	}
-	if recovered, err := mgr.RecoverWorkspaces(context.Background()); err != nil {
-		logger.Error("workspace recovery completed with errors", "recovered", recovered, "error", err)
-	} else if recovered > 0 {
-		logger.Info("recovered persisted workspaces", "count", recovered)
-	}
 
 	listener, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
 		logger.Error("failed to listen", "listen", cfg.Listen, "error", err)
 		os.Exit(1)
+	}
+	if addr, ok := listener.Addr().(*net.TCPAddr); ok {
+		mgr.SetInternalBaseURL(fmt.Sprintf("http://127.0.0.1:%d", addr.Port))
 	}
 	if cfg.PortFile != "" {
 		if addr, ok := listener.Addr().(*net.TCPAddr); ok {
@@ -120,6 +118,11 @@ func main() {
 				os.Exit(1)
 			}
 		}
+	}
+	if recovered, err := mgr.RecoverWorkspaces(context.Background()); err != nil {
+		logger.Error("workspace recovery completed with errors", "recovered", recovered, "error", err)
+	} else if recovered > 0 {
+		logger.Info("recovered persisted workspaces", "count", recovered)
 	}
 
 	server := &http.Server{

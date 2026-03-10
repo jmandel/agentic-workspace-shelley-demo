@@ -15,10 +15,10 @@ FILE_DIR=".workspace-smoke-$RANDOM"
 FILE_PATH="$FILE_DIR/note.txt"
 TOOL_NAME="smoke-tool-$RANDOM"
 WORKSPACE_ROOT="$TMPDIR/manager-state/$MANAGER_NAMESPACE/$WORKSPACE_NAME/workspace"
+WORKSPACE_DB="$TMPDIR/manager-state/$MANAGER_NAMESPACE/$WORKSPACE_NAME/shelley.db"
 BWRAP_TMP_NAME="manager-bwrap-$RANDOM"
 BWRAP_HOST_TMP="/tmp/$BWRAP_TMP_NAME"
 LOCAL_TOOLS_DIR="$ROOT_DIR/test/fixtures/local-tools"
-JIRA_FIXTURE="$ROOT_DIR/shelleymanager/manager/testdata/hl7-jira-mcp.js"
 MANAGER_PID=""
 CLI_PID=""
 CLI_BUFFER=""
@@ -151,7 +151,7 @@ wait_for_http "http://localhost:$PORT/health"
 log "Creating workspace through the manager"
 CREATE_JSON="$(curl -sf -X POST "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces" \
   -H 'Content-Type: application/json' \
-  -d "{\"name\":\"$WORKSPACE_NAME\",\"template\":\"$TEMPLATE_NAME\",\"topics\":[{\"name\":\"$TOPIC_NAME\"}],\"runtime\":{\"localTools\":[\"fhir-validator\"]}}")"
+  -d "{\"name\":\"$WORKSPACE_NAME\",\"template\":\"$TEMPLATE_NAME\",\"topics\":[{\"name\":\"$TOPIC_NAME\"}],\"runtime\":{\"localTools\":[\"fhir-validator\",\"hl7-jira-support\"]}}")"
 require_output "$CREATE_JSON" "\"name\":\"$WORKSPACE_NAME\"" "POST /apis/v1/namespaces/{ns}/workspaces creates a Shelley-backed workspace"
 require_output "$CREATE_JSON" "\"endpoint\":\"ws://localhost:$PORT/acp/$MANAGER_NAMESPACE/$WORKSPACE_NAME\"" "create response exposes public ACP endpoint"
 require_output "$CREATE_JSON" "\"fhir-validator\"" "create response includes selected local tool metadata"
@@ -166,10 +166,12 @@ require_output "$HEALTH_JSON" '"fhir-validator"' "GET /health reports the publis
 
 LOCAL_TOOLS_JSON="$(curl -sf "http://localhost:$PORT/apis/v1/local-tools")"
 require_output "$LOCAL_TOOLS_JSON" '"fhir-validator"' "GET /apis/v1/local-tools lists the validator bundle"
+require_output "$LOCAL_TOOLS_JSON" '"hl7-jira-support"' "GET /apis/v1/local-tools lists the Jira support bundle"
 
 DETAIL_JSON="$(curl -sf "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME")"
 require_output "$DETAIL_JSON" "\"name\":\"$TOPIC_NAME\"" "GET workspace detail includes the proxied runtime topics"
 require_output "$DETAIL_JSON" '"localTools":[{"name":"fhir-validator"' "GET workspace detail includes resolved local tool metadata"
+require_output "$DETAIL_JSON" '"name":"hl7-jira-support"' "GET workspace detail includes the selected Jira support bundle"
 
 HOME_HTML="$(curl -sf "http://localhost:$PORT/")"
 require_output "$HOME_HTML" "Create Workspace" "GET / serves the manager web entry point"
@@ -215,32 +217,33 @@ curl -sf -X DELETE "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE
 curl -sf -X DELETE "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/files/$FILE_DIR" >/dev/null
 
 log "Checking manager-proxied workspace tool endpoints"
-curl -sf -X PUT --data-binary @"$JIRA_FIXTURE" \
-  "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/files/.demo/hl7-jira-mcp.js" >/dev/null
-
 TOOL_JSON="$(curl -sf -X POST "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/tools" \
   -H 'Content-Type: application/json' \
   -d @- <<JSON
 {
   "name": "hl7-jira",
-  "description": "Search realistic HL7 Jira fixture data",
+  "description": "Search the real HL7 Jira snapshot",
   "provider": "demo@acme.example",
   "protocol": "mcp",
   "transport": {
     "type": "stdio",
     "command": "bun",
-    "args": ["./.demo/hl7-jira-mcp.js"],
-    "cwd": "."
+    "args": ["/tools/hl7-jira-support/bin/hl7-jira-mcp.js"],
+    "cwd": "/tools/hl7-jira-support",
+    "env": {
+      "HL7_JIRA_DB": "/tools/hl7-jira-support/data/jira-data.db"
+    }
   },
   "tools": [
     {
       "name": "jira.search",
       "title": "Search HL7 Jira",
-      "description": "Search realistic HL7 Jira issues related to validation and FHIRPath behavior",
+      "description": "Search the real HL7 Jira SQLite snapshot for validator and FHIRPath issues",
       "inputSchema": {
         "type": "object",
         "properties": {
-          "query": { "type": "string" }
+          "query": { "type": "string" },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 10 }
         },
         "required": ["query"],
         "additionalProperties": false
@@ -251,7 +254,7 @@ TOOL_JSON="$(curl -sf -X POST "http://localhost:$PORT/apis/v1/namespaces/$MANAGE
 JSON
 )"
 require_output "$TOOL_JSON" '"name":"hl7-jira"' "proxied POST /tools creates the Jira MCP tool"
-require_output "$TOOL_JSON" '"command":"bun"' "workspace tool response normalizes the stdio transport"
+require_output "$TOOL_JSON" '"/tools/hl7-jira-support/bin/hl7-jira-mcp.js"' "workspace tool response preserves the public stdio transport"
 
 GRANT_JSON="$(curl -sf -X POST "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/tools/hl7-jira/grants" \
   -H 'Content-Type: application/json' \
@@ -260,6 +263,9 @@ require_output "$GRANT_JSON" '"jira.search"' "proxied POST /tools/{tool}/grants 
 
 TOOLS_JSON="$(curl -sf "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/tools")"
 require_output "$TOOLS_JSON" '"hl7-jira"' "proxied GET /tools lists the Jira MCP tool"
+
+SYSTEM_PROMPT_TOOLS_JSON="$(sqlite3 "$WORKSPACE_DB" "SELECT COALESCE(display_data, '') FROM messages WHERE conversation_id = (SELECT conversation_id FROM topics WHERE topic_name = '$TOPIC_NAME') AND type = 'system' ORDER BY sequence_id ASC LIMIT 1;")"
+require_output "$SYSTEM_PROMPT_TOOLS_JSON" 'workspace_hl7-jira' "registered Jira tool is reflected in the stored Shelley system-prompt tool display"
 
 log "Running real Bun CLI against shelleymanager"
 (
@@ -289,8 +295,8 @@ log "Running real Bun CLI against shelleymanager"
   read_cli_until "Patient.gender" "late join replay includes the patient validation detail"
   read_cli_until "Observation.component" "late join replay includes the validator failure detail"
   printf '%s\n' 'workspace_tool_json: hl7-jira jira.search {"query":"validation error handling"}' >&3
-  read_cli_until "FHIR-53953" "cli.ts received the Jira MCP search result"
-  read_cli_until "FHIR-53960" "cli.ts received multiple realistic Jira hits"
+  read_cli_until "FHIR-20482" "cli.ts received the Jira MCP search result"
+  read_cli_until "FHIR-31991" "cli.ts received multiple realistic Jira hits"
 
   if [[ "$RUNTIME_MODE" == "bwrap" ]]; then
     printf 'bash: touch bwrap-inside.txt && touch /tmp/%s && echo bwrap-ok\n' "$BWRAP_TMP_NAME" >&3

@@ -52,7 +52,7 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
   <main>
     <div class="card" style="margin-bottom:20px;">
       <h1>Shelley Manager Demo</h1>
-      <p class="muted">Create a workspace from the manager-published local tool catalog, then optionally pre-register the HL7 Jira MCP tool with the real workspace APIs.</p>
+      <p class="muted">Create a workspace from the manager-published local tool catalog, then optionally register the HL7 Jira MCP tool through the same workspace tools API the CLI would use.</p>
       <div class="toolbar">
         <div class="field">
           <label for="participant-name" style="margin-top:0;">Participant Name</label>
@@ -88,7 +88,7 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
               <input id="jira-enabled" type="checkbox" checked style="width:auto;">
               <span>Register <code>hl7-jira</code> via the workspace tools API</span>
             </label>
-            <p class="muted" style="margin:8px 0 0;">This writes a Bun MCP fixture into the workspace, then registers it through the real tools API.</p>
+            <p class="muted" style="margin:8px 0 0;">This registers a brokered HL7 Jira MCP tool through <code>POST /tools</code> while keeping the real Bun transport private to the manager.</p>
           </div>
 
           <div class="row" style="margin-top:16px;">
@@ -171,11 +171,12 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
     async function loadLocalTools() {
       const res = await fetch('/apis/v1/local-tools');
       const tools = await readJSON(res, 'load local tools');
-      if (!Array.isArray(tools) || tools.length === 0) {
+      const visibleTools = Array.isArray(tools) ? tools.filter(tool => (tool && tool.exposure) !== 'support_bundle') : [];
+      if (visibleTools.length === 0) {
         localToolsEl.innerHTML = '<p class="muted">No local tools published by this manager.</p>';
         return;
       }
-      localToolsEl.innerHTML = tools.map((tool, idx) => {
+      localToolsEl.innerHTML = visibleTools.map((tool, idx) => {
         const requires = (tool.requirements && tool.requirements.length)
           ? '<div class="muted">Requires: ' + tool.requirements.join(', ') + '</div>' : '';
         const commands = (tool.commands && tool.commands.length)
@@ -203,7 +204,8 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
       const topics = Array.isArray(ws.topics) ? ws.topics : [];
       const defaultTopic = (topics[0] && topics[0].name) || 'bp-example-validator';
       const cli = 'WS_MANAGER=' + window.location.origin + ' bun run cli.ts connect ' + ws.name + ' ' + defaultTopic;
-      const localTools = ws.runtime && ws.runtime.localTools ? ws.runtime.localTools.map(t => '<code>' + escapeHTML(t.name) + '</code>').join(', ') : '<span class="muted">none</span>';
+      const runtimeLocalTools = ws.runtime && ws.runtime.localTools ? ws.runtime.localTools.filter(t => t.exposure !== 'support_bundle') : [];
+      const localTools = runtimeLocalTools.length > 0 ? runtimeLocalTools.map(t => '<code>' + escapeHTML(t.name) + '</code>').join(', ') : '<span class="muted">none</span>';
       const topicList = topics.length > 0
         ? topics.map(topic => {
             const topicName = topic.name;
@@ -325,50 +327,45 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
     });
 
     async function registerDemoJiraTool(name) {
-      const fixtureAssetRes = await fetch('/demo-assets/hl7-jira-mcp.js');
-      const jiraFixtureScript = await fixtureAssetRes.text();
-      if (!fixtureAssetRes.ok) {
-        throw new Error('load hl7-jira fixture: ' + fixtureAssetRes.status + ' ' + (jiraFixtureScript.trim() || ''));
-      }
-
-      const fixtureRes = await fetch(apiBase + '/' + encodeURIComponent(name) + '/files/.demo/hl7-jira-mcp.js', {
-        method: 'PUT',
-        headers: {'Content-Type': 'text/plain; charset=utf-8'},
-        body: jiraFixtureScript
-      });
-      if (!fixtureRes.ok) {
-        throw new Error('write hl7-jira fixture: ' + fixtureRes.status);
-      }
-
-      const createRes = await fetch(apiBase + '/' + encodeURIComponent(name) + '/tools', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          name: 'hl7-jira',
-          description: 'Search realistic HL7 Jira fixture data',
-          provider: 'demo@acme.example',
-          protocol: 'mcp',
-          transport: {
-            type: 'stdio',
-            command: 'bun',
-            args: ['./.demo/hl7-jira-mcp.js'],
-            cwd: '.'
-          },
-          tools: [{
+      const payload = {
+        name: 'hl7-jira',
+        description: 'Search real HL7 Jira issue data from the fhir-community-search snapshot',
+        provider: 'demo@acme.example',
+        protocol: 'mcp',
+        transport: {
+          type: 'stdio',
+          command: 'bun',
+          args: ['/tools/hl7-jira-support/bin/hl7-jira-mcp.js'],
+          cwd: '/tools/hl7-jira-support',
+          env: {
+            HL7_JIRA_DB: '/tools/hl7-jira-support/data/jira-data.db'
+          }
+        },
+        tools: [
+          {
             name: 'jira.search',
             title: 'Search HL7 Jira',
-            description: 'Search realistic HL7 Jira issues related to validation and FHIRPath behavior',
+            description: 'Search the real HL7 Jira SQLite snapshot for validator and FHIRPath issues',
             inputSchema: {
               type: 'object',
-              properties: { query: { type: 'string' } },
+              properties: {
+                query: { type: 'string' },
+                limit: { type: 'integer', minimum: 1, maximum: 10 }
+              },
               required: ['query'],
               additionalProperties: false
             }
-          }]
-        })
+          }
+        ]
+      };
+      const res = await fetch(apiBase + '/' + encodeURIComponent(name) + '/tools', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
       });
-      if (!createRes.ok && createRes.status !== 409) {
-        throw new Error('register hl7-jira: ' + createRes.status);
+      if (!res.ok) {
+        const text = (await res.text()).trim();
+        throw new Error('register hl7-jira demo tool: ' + res.status + (text ? ' ' + text : ''));
       }
       const grantRes = await fetch(apiBase + '/' + encodeURIComponent(name) + '/tools/hl7-jira/grants', {
         method: 'POST',
@@ -381,8 +378,9 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
           scope: {}
         })
       });
-      if (!grantRes.ok && grantRes.status !== 409) {
-        throw new Error('grant hl7-jira: ' + grantRes.status);
+      if (!grantRes.ok) {
+        const text = (await grantRes.text()).trim();
+        throw new Error('grant hl7-jira demo tool: ' + grantRes.status + (text ? ' ' + text : ''));
       }
     }
 
@@ -394,6 +392,9 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
       const template = document.getElementById('template').value.trim();
       const localTools = Array.from(document.querySelectorAll('input[name="localTool"]:checked')).map(el => el.value);
       const jiraEnabled = document.getElementById('jira-enabled').checked;
+      if (jiraEnabled && !localTools.includes('hl7-jira-support')) {
+        localTools.push('hl7-jira-support');
+      }
 
       try {
         const createRes = await fetch(apiBase, {
@@ -879,7 +880,14 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
           appendMessage('system', 'Tool Call', (msg.title || msg.tool || '') + ' · ' + (msg.status || 'started'));
           break;
         case 'tool_update':
-          appendMessage('system', 'Tool Update', (msg.title || msg.tool || '') + ' · ' + (msg.status || ''));
+          appendMessage(
+            'system',
+            'Tool Update',
+            (msg.title || msg.tool || '')
+              + ' · '
+              + (msg.status || '')
+              + (msg.data ? '\n\n' + msg.data : '')
+          );
           break;
         case 'system':
           appendMessage('system', 'System', msg.data || '');
@@ -1003,7 +1011,7 @@ var wsLanguageTemplate = template.Must(template.New("ws-language").Parse(`<!doct
       <div style="display:flex; justify-content:space-between; gap:12px; align-items:flex-start; flex-wrap:wrap;">
         <div>
           <h1>WS Language Tutorial</h1>
-          <p class="muted">Use <code>ws ...</code> prompts with the predictable model to script live demo behavior on the fly. Tags can appear in any order; only one primary action is allowed per prompt.</p>
+          <p class="muted">Use <code>ws</code> prompts with the predictable model to script live demo behavior on the fly. Tags can appear in any order; only one primary action is allowed per prompt.</p>
         </div>
         <a class="action-link" href="/">Back To Shelley Manager</a>
       </div>
@@ -1034,18 +1042,26 @@ var wsLanguageTemplate = template.Must(template.New("ws-language").Parse(`<!doct
     </div>
 
     <section class="card">
+      <h2>Quick Rescue</h2>
+      <pre>ws</pre>
+      <pre>ws help</pre>
+      <pre>ws usage</pre>
+      <p class="muted">Any of those returns the full in-chat guide, so if you lose the exact syntax during the demo you can recover without leaving the topic.</p>
+    </section>
+
+    <section class="card">
       <h2>Demo-Ready Examples</h2>
       <pre>ws text "Thanks. Let me summarize the validator findings."</pre>
       <pre>ws pause2 validator "input/examples/Patient-bp-alice-smith.json input/examples/Observation-bp-alice-morning.json" toolpause3 aftertext "The validator found bad patient demographics and a broken blood pressure example."</pre>
-      <pre>ws jira "FHIR validator example errors invalid dates bad codes blood pressure" pause1</pre>
-      <pre>ws tool hl7-jira action jira.search input '{"query":"validator error handling bad codes invalid dates"}' aftertext "I found two relevant HL7 Jira threads."</pre>
+      <pre>ws jira "validation error handling" pause1</pre>
+      <pre>ws tool hl7-jira action jira.search input '{"query":"validation error handling","limit":3}' aftertext "I found relevant HL7 Jira issues about validator error handling."</pre>
       <pre>ws bash "sed -n '1,180p' input/examples/Patient-bp-alice-smith.json && printf '\n---\n' && sed -n '1,240p' input/examples/Observation-bp-alice-morning.json"</pre>
     </section>
 
     <section class="card">
       <h2>Whole Demo Commands</h2>
       <pre>1. ws validator "input/examples/Patient-bp-alice-smith.json input/examples/Observation-bp-alice-morning.json" toolpause5 aftertext "The validator found bad patient demographics and a broken blood pressure example."
-2. ws jira "FHIR validator example errors invalid dates bad codes blood pressure" pause1
+2. ws jira "validation error handling" pause1
 3. ws bash "sed -n '1,180p' input/examples/Patient-bp-alice-smith.json && printf '\n---\n' && sed -n '1,240p' input/examples/Observation-bp-alice-morning.json"
 4. ws bash "python3 - &lt;&lt;'PY'
 import json
@@ -1090,7 +1106,7 @@ PY"
         <li>Wrap multi-word values in single or double quotes.</li>
         <li><code>input</code> must be valid JSON.</li>
         <li>Use only one primary action in a single prompt.</li>
-        <li><code>ws help</code> in a predictable-model chat returns a compact version of this tutorial.</li>
+        <li><code>ws</code>, <code>ws help</code>, and <code>ws usage</code> all return the full in-chat guide.</li>
       </ul>
     </section>
   </main>
@@ -1127,15 +1143,6 @@ func (m *Manager) handleWSLanguage(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = wsLanguageTemplate.Execute(w, nil)
-}
-
-func (m *Manager) handleDemoJiraScript(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	_, _ = w.Write([]byte(demoHL7JiraMCPFixtureScript))
 }
 
 func (m *Manager) handleApp(w http.ResponseWriter, r *http.Request) {

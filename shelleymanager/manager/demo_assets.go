@@ -1,7 +1,6 @@
 package manager
 
 import (
-	_ "embed"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,9 +65,6 @@ Known issue:
 Suggested first command:
 - fhir-validator input/examples/Patient-bp-alice-smith.json input/examples/Observation-bp-alice-morning.json
 `
-
-//go:embed testdata/hl7-jira-mcp.js
-var demoHL7JiraMCPFixtureScript string
 
 func seedWorkspaceTemplate(workspaceDir, templateName string) error {
 	switch strings.TrimSpace(templateName) {

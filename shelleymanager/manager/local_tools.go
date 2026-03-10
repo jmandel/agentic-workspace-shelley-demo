@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -16,9 +17,15 @@ import (
 
 const defaultLocalToolsCatalogName = "catalog.json"
 
+const (
+	localToolExposureBashOnly      = "bash_only"
+	localToolExposureSupportBundle = "support_bundle"
+)
+
 type LocalTool struct {
 	Name         string
 	Version      string
+	Exposure     string
 	Description  string
 	Guidance     string
 	Requirements []string
@@ -32,13 +39,14 @@ type LocalToolCommand struct {
 }
 
 type localToolCatalogEntry struct {
-	Name         string                    `json:"name"`
-	Version      string                    `json:"version,omitempty"`
-	Description  string                    `json:"description"`
-	Guidance     string                    `json:"guidance,omitempty"`
-	Requirements []string                  `json:"requirements,omitempty"`
-	Root         string                    `json:"root,omitempty"`
-	Commands     []localToolCatalogCommand `json:"commands"`
+	Name         string                     `json:"name"`
+	Version      string                     `json:"version,omitempty"`
+	Exposure     string                     `json:"exposure,omitempty"`
+	Description  string                     `json:"description"`
+	Guidance     string                     `json:"guidance,omitempty"`
+	Requirements []string                   `json:"requirements,omitempty"`
+	Root         string                     `json:"root,omitempty"`
+	Commands     []localToolCatalogCommand  `json:"commands"`
 	Artifacts    []localToolCatalogArtifact `json:"artifacts,omitempty"`
 }
 
@@ -51,6 +59,8 @@ type localToolCatalogArtifact struct {
 	URL          string `json:"url"`
 	RelativePath string `json:"relativePath"`
 	SHA256       string `json:"sha256,omitempty"`
+	SourceSHA256 string `json:"sourceSha256,omitempty"`
+	Compression  string `json:"compression,omitempty"`
 	Executable   bool   `json:"executable,omitempty"`
 }
 
@@ -59,7 +69,7 @@ type localToolInfo struct {
 	Kind         string                 `json:"kind"`
 	Exposure     string                 `json:"exposure"`
 	Description  string                 `json:"description"`
-	Commands     []localToolCommandInfo `json:"commands"`
+	Commands     []localToolCommandInfo `json:"commands,omitempty"`
 	Guidance     string                 `json:"guidance,omitempty"`
 	Requirements []string               `json:"requirements,omitempty"`
 	Version      string                 `json:"version,omitempty"`
@@ -105,6 +115,7 @@ func LoadLocalToolsCatalog(sharedToolsDir, explicitPath, cacheRoot string) ([]Lo
 		entry.Description = strings.TrimSpace(entry.Description)
 		entry.Guidance = strings.TrimSpace(entry.Guidance)
 		entry.Root = strings.TrimSpace(entry.Root)
+		entry.Exposure = strings.ToLower(strings.TrimSpace(entry.Exposure))
 		if entry.Name == "" {
 			return nil, fmt.Errorf("local tool name required")
 		}
@@ -112,6 +123,14 @@ func LoadLocalToolsCatalog(sharedToolsDir, explicitPath, cacheRoot string) ([]Lo
 			return nil, fmt.Errorf("duplicate local tool name %q", entry.Name)
 		}
 		seen[entry.Name] = struct{}{}
+
+		switch entry.Exposure {
+		case "":
+			entry.Exposure = localToolExposureBashOnly
+		case localToolExposureBashOnly, localToolExposureSupportBundle:
+		default:
+			return nil, fmt.Errorf("local tool %q has unsupported exposure %q", entry.Name, entry.Exposure)
+		}
 
 		root := entry.Root
 		if root == "" {
@@ -158,7 +177,7 @@ func LoadLocalToolsCatalog(sharedToolsDir, explicitPath, cacheRoot string) ([]Lo
 				return nil, fmt.Errorf("local tool %q command %q is a directory", entry.Name, commandPath)
 			}
 		}
-		if len(commands) == 0 {
+		if len(commands) == 0 && entry.Exposure == localToolExposureBashOnly {
 			return nil, fmt.Errorf("local tool %q requires at least one command", entry.Name)
 		}
 
@@ -168,6 +187,7 @@ func LoadLocalToolsCatalog(sharedToolsDir, explicitPath, cacheRoot string) ([]Lo
 		tools = append(tools, LocalTool{
 			Name:         entry.Name,
 			Version:      strings.TrimSpace(entry.Version),
+			Exposure:     entry.Exposure,
 			Description:  entry.Description,
 			Guidance:     entry.Guidance,
 			Requirements: requirements,
@@ -221,6 +241,7 @@ func localToolInfos(tools []LocalTool) []localToolInfo {
 	}
 	infos := make([]localToolInfo, 0, len(tools))
 	for _, tool := range tools {
+		exposure := normalizeLocalToolExposure(tool.Exposure)
 		commands := make([]localToolCommandInfo, 0, len(tool.Commands))
 		for _, cmd := range tool.Commands {
 			commands = append(commands, localToolCommandInfo{
@@ -231,7 +252,7 @@ func localToolInfos(tools []LocalTool) []localToolInfo {
 		infos = append(infos, localToolInfo{
 			Name:         tool.Name,
 			Kind:         "local_tool",
-			Exposure:     "bash_only",
+			Exposure:     exposure,
 			Description:  tool.Description,
 			Commands:     commands,
 			Guidance:     tool.Guidance,
@@ -378,7 +399,10 @@ func downloadLocalToolArtifact(target string, artifact localToolCatalogArtifact)
 	if url == "" {
 		return fmt.Errorf("artifact url required for %q", artifact.RelativePath)
 	}
+	compression := strings.ToLower(strings.TrimSpace(artifact.Compression))
+	downloadTarget := target + ".download"
 	tmp := target + ".tmp"
+	_ = os.Remove(downloadTarget)
 	_ = os.Remove(tmp)
 
 	client := &http.Client{Timeout: 2 * time.Minute}
@@ -396,18 +420,46 @@ func downloadLocalToolArtifact(target string, artifact localToolCatalogArtifact)
 	if artifact.Executable {
 		mode = 0o755
 	}
-	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	out, err := os.OpenFile(downloadTarget, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		return err
 	}
 	if _, err := io.Copy(out, res.Body); err != nil {
 		out.Close()
-		_ = os.Remove(tmp)
+		_ = os.Remove(downloadTarget)
 		return err
 	}
 	if err := out.Close(); err != nil {
-		_ = os.Remove(tmp)
+		_ = os.Remove(downloadTarget)
 		return err
+	}
+	if checksum := strings.TrimSpace(artifact.SourceSHA256); checksum != "" {
+		sum, err := sha256File(downloadTarget)
+		if err != nil {
+			_ = os.Remove(downloadTarget)
+			return err
+		}
+		if !strings.EqualFold(sum, checksum) {
+			_ = os.Remove(downloadTarget)
+			return fmt.Errorf("downloaded artifact %q checksum mismatch: got %s want %s", artifact.RelativePath, sum, checksum)
+		}
+	}
+	switch compression {
+	case "", "none":
+		if err := os.Rename(downloadTarget, tmp); err != nil {
+			_ = os.Remove(downloadTarget)
+			return err
+		}
+	case "gzip":
+		if err := decompressGzipFile(downloadTarget, tmp, mode); err != nil {
+			_ = os.Remove(downloadTarget)
+			_ = os.Remove(tmp)
+			return err
+		}
+		_ = os.Remove(downloadTarget)
+	default:
+		_ = os.Remove(downloadTarget)
+		return fmt.Errorf("unsupported artifact compression %q", artifact.Compression)
 	}
 	if checksum := strings.TrimSpace(artifact.SHA256); checksum != "" {
 		sum, err := sha256File(tmp)
@@ -430,6 +482,30 @@ func downloadLocalToolArtifact(target string, artifact localToolCatalogArtifact)
 	return nil
 }
 
+func decompressGzipFile(src, dst string, perm os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	reader, err := gzip.NewReader(in)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, reader); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
+}
+
 func sha256File(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -444,7 +520,13 @@ func sha256File(path string) (string, error) {
 }
 
 func writeWorkspaceLocalToolGuidance(workspaceDir string, tools []LocalTool) error {
-	if len(tools) == 0 {
+	bashTools := make([]LocalTool, 0, len(tools))
+	for _, tool := range tools {
+		if normalizeLocalToolExposure(tool.Exposure) == localToolExposureBashOnly {
+			bashTools = append(bashTools, tool)
+		}
+	}
+	if len(bashTools) == 0 {
 		return nil
 	}
 
@@ -458,7 +540,7 @@ func writeWorkspaceLocalToolGuidance(workspaceDir string, tools []LocalTool) err
 	b.WriteString("This workspace includes trusted local tools provided by the Shelley Manager.\n")
 	b.WriteString("These tools are available through bash and are already approved for this workspace.\n\n")
 	b.WriteString("Available local tools:\n")
-	for _, tool := range tools {
+	for _, tool := range bashTools {
 		b.WriteString("- `")
 		b.WriteString(tool.Name)
 		b.WriteString("`")
@@ -486,4 +568,12 @@ func writeWorkspaceLocalToolGuidance(workspaceDir string, tools []LocalTool) err
 	b.WriteString("\nUse these through bash when appropriate. Prefer the exact command names above.\n")
 
 	return os.WriteFile(filepath.Join(guidanceDir, "AGENTS.md"), []byte(b.String()), 0o644)
+}
+
+func normalizeLocalToolExposure(exposure string) string {
+	exposure = strings.TrimSpace(strings.ToLower(exposure))
+	if exposure == "" {
+		return localToolExposureBashOnly
+	}
+	return exposure
 }

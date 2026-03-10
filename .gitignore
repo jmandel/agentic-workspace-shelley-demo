@@ -1,3 +1,7 @@
 .demo-bin/
 .demo-run/
+.demo/
 shelleymanager/.demo-bin/
+shelleymanager/.shelleymanager-state/
+shelleymanager/shelleymanager
+shelleymanager/manager/acme/
