@@ -377,3 +377,42 @@
 - `go test ./server -run 'TestWorkspaceToolMCP|TestWorkspaceToolCallsAreLogged|TestWorkspaceToolApproval' -v` in `shelley/`
 - `go test ./db ./server` in `shelley/`
 - `./test/smoke.sh` from the workspace root
+
+### 2026-03-10 update — workspace tool API shape and websocket tool updates
+- Fixed the previously noted missing `tool_update` on the workspace websocket approval path.
+- Root cause:
+  - Shelley persists tool results as `user` messages when the underlying LLM message role is `user`, even when the message content is a tool result.
+  - The workspace websocket adapter had only been translating persisted `tool` messages into `tool_update`.
+  - Result: the tool result was present in conversation history, but the workspace websocket client never saw the corresponding `tool_update`.
+- Fix:
+  - The adapter now translates tool-result content from both persisted `user` and persisted `tool` message types.
+  - Re-tightened the approval-path MCP websocket test to require the `tool_update` message again.
+
+### Hosted `/ws/tools` registration changes
+- Kept the hosted Shelley tool registry as the source of truth; no remote MCP catalog mirroring was added.
+- Extended `POST /ws/tools` to accept either:
+  - the existing spec-compatible `actions: ["read", "write"]`
+  - or richer action objects carrying `name`, `description`, and `inputSchema`
+- The richer action form is normalized into the existing `workspace_tools.actions` JSON column, so this slice did not need a new DB migration.
+- `GET /ws/tools` and `GET /ws/tools/{tool}` now continue to expose `actions` as simple names, and also expose `actionDefs` when richer metadata is available.
+- Shelley runtime tool exposure now uses that richer metadata when present:
+  - per-action descriptions are included in the `workspace_<tool>` description shown to the model
+  - the wrapper input schema narrows by visible action and carries through per-action `inputSchema`
+- Validation added for invalid action schemas so clearly non-object `inputSchema` payloads are rejected at registration time.
+
+### Compatibility note
+- The protocol/spec draft still shows `actions` as a string array.
+- Shelley now accepts that form unchanged and treats richer action objects as a backward-compatible extension for better runtime schema fidelity.
+
+### Validation update — tool registration + websocket translation checkpoint
+- `go test ./server -run 'TestWorkspaceToolMCP|TestWorkspaceTools|TestEmitWorkspace' -v` in `shelley/`
+- `go test ./db ./server` in `shelley/`
+- `./test/smoke.sh` from the workspace root
+
+### 2026-03-10 update — RFC directory
+- Added `docs/rfcs/` as a place for narrower design decisions that should not be buried in the plan or the running journal.
+- Added the first RFC:
+  - `0001-workspace-manager-runtime-handoff.md`
+- This RFC captures the design distinction that came up in discussion:
+  - Shelley can reasonably remain a single-workspace runtime
+  - the protocol gap is the missing handoff between a manager API that creates workspaces and a runtime API that serves one workspace
