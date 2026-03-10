@@ -470,3 +470,13 @@
   - the Bun reference implementation behavior in `reference-impl/`
   - Shelley's own implementation pressure and surprises while building a compatible server
 - Deliberately did not write commits/files RFCs yet; those remain future-facing and less informed by the current interoperability slice.
+
+### 2026-03-10 update — RFC 0001 reframed around control plane vs runtime plane
+- Rewrote `0001-workspace-manager-runtime-handoff.md` to focus on the actual protocol crux:
+  - the Workspace Manager should create and locate workspaces
+  - it should not be required to host or proxy the runtime APIs of those workspaces
+- The revised proposal now recommends:
+  - Manager lifecycle routes remain the control plane
+  - Manager create/get responses return a handoff object with stable workspace identity plus runtime REST and ACP endpoints
+  - runtime REST routes are defined relative to the returned runtime API base instead of being implicitly tied to the Manager host/path space
+- This is a better fit for likely Shelley deployment as well as VM/container-style managers that simply provision a runtime and hand back its address.
