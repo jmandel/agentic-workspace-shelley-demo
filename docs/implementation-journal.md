@@ -673,3 +673,59 @@
   - `fhir-validator` comes from the manager-published local tool catalog
   - `hl7-jira` still comes from the workspace tools API as MCP
 - Updated `docs/demo-run-of-show.md` accordingly so the demo now explicitly starts with the manager catalog before workspace creation.
+
+### 2026-03-10 update — demo manager flow and SDK-backed Bun MCP fixture
+- Implemented the demo-critical manager flow:
+  - manager home page at `/`
+  - manager topic page at `/app/{namespace}/{workspace}/{topic}`
+  - published local tool catalog at `GET /apis/v1/local-tools`
+  - workspace create path that accepts `runtime.localTools`
+  - demo workspace seeding for `acme-rpm-ig`
+- Selected local tools are now treated as manager-controlled runtime capabilities:
+  - manager resolves requested `runtime.localTools` against its published catalog
+  - launcher mounts only those selected tool roots into the runtime
+  - manager writes `.shelley/AGENTS.md` describing the mounted bash-visible commands so Shelley knows they exist
+- Added a concrete demo fixture for `fhir-validator` under `test/fixtures/local-tools/`:
+  - command name: `fhir-validator`
+  - behavior: reports the missing `Observation.component` slicing metadata until the profile is fixed
+  - this is intentionally a local runtime tool reachable via bash, not a managed workspace tool registration
+- Replaced the hand-rolled HL7 Jira MCP fixture with a real Bun MCP server using the official JavaScript SDK:
+  - script: `shelleymanager/manager/testdata/hl7-jira-mcp.js`
+  - server library: `@modelcontextprotocol/sdk/server/*`
+  - backing store: `bun:sqlite`
+  - data shape: a tiny SQLite database created in `.demo/hl7-community-search.sqlite` on first run
+  - current fixture issues include `FHIR-53953`, `FHIR-53960`, `FHIR-51091`, and `FHIR-31709`
+- The manager UI now does the real demo setup path:
+  - create workspace with `runtime.localTools`
+  - write `.demo/hl7-jira-mcp.js` into the workspace through the files API
+  - register `hl7-jira` through `POST /tools`
+  - grant `jira.search` through `POST /tools/{tool}/grants`
+- Tightened topic catchup for the late-join demo:
+  - websocket topic connect now replays translated persisted topic messages
+  - persisted tool results are translated into both `tool_update` and `text`
+  - reason: the checked-out Bun CLI only prints `text` and would otherwise hide successful tool output during replay
+
+### Validation update — full demo path
+- Focused Shelley MCP fixture validation:
+  - `go test ./server -run TestWorkspaceToolMCPStdioBunFixtureFromWorkspace -v`
+- Full Shelley server validation:
+  - `go test ./server`
+- Full manager validation:
+  - `cd shelleymanager && go test ./...`
+- Full end-to-end demo smoke in process mode:
+  - `./test/smoke.sh`
+- Full end-to-end demo smoke in `bwrap` mode:
+  - `SMOKE_RUNTIME_MODE=bwrap ./test/smoke.sh`
+- The smoke path now proves all of the intended demo beats:
+  - local tool catalog discovery
+  - workspace creation with `runtime.localTools`
+  - served manager web pages
+  - late CLI join replay
+  - `fhir-validator` local tool execution through bash
+  - `hl7-jira` MCP stdio execution through Bun inside the workspace runtime
+  - manager proxying for both REST and topic websocket traffic
+
+### Remaining edge / design note
+- The current demo keeps `fhir-validator` as a mounted wrapper script rather than a real validator JAR plus explicit JRE dependency model.
+- In `bwrap` mode, host system runtime binaries such as `bun` and `java` are visible because the launcher mounts standard host runtime directories like `/usr` and `/bin` read-only into the sandbox.
+- That is good enough for the current demo, but if local tool catalog entries later need explicit transitive runtime dependencies, the catalog model will need to grow beyond `commands + guidance + requirements`.

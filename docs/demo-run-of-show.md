@@ -88,17 +88,20 @@ Main demo example:
 Important narration point:
 
 - the MCP tool runs inside the bubblewrapped Shelley runtime
-- for a realistic stdio MCP story, the configuration should usually use `npx`
+- in this demo, the MCP tool is a Bun script written into the workspace and run
+  with `bun`
+- in production, many stdio MCP tools will use `npx`, but that is not this demo
 
 Example configuration shape:
 
 ```json
 {
   "protocol": "mcp",
-  "config": {
-    "transport": "stdio",
-    "command": "npx",
-    "args": ["-y", "@acme-demo/hl7-jira-mcp"]
+  "transport": {
+    "type": "stdio",
+    "command": "bun",
+    "args": ["./.demo/hl7-jira-mcp.js"],
+    "cwd": "."
   }
 }
 ```
@@ -174,7 +177,24 @@ Optional extension:
 - add `"ig-publisher"` to the same `runtime.localTools` list if we want the
   second-act publisher check
 
-### 2. Register the MCP tool through the workspace tools API
+### 2. Write the Bun MCP fixture into the workspace
+
+This is a workspace runtime file API call, exposed publicly through the manager.
+
+```http
+PUT /apis/v1/namespaces/acme/workspaces/bp-ig-fix/files/.demo/hl7-jira-mcp.js
+Content-Type: text/plain
+
+...SDK-backed Bun MCP server source...
+```
+
+Meaning:
+
+- the demo MCP fixture lives in the workspace itself
+- the fixture uses the official MCP JavaScript SDK plus `bun:sqlite`
+- Shelley later launches it inside the bubblewrapped runtime with `bun`
+
+### 3. Register the MCP tool through the workspace tools API
 
 This is a workspace runtime API call, exposed publicly through the manager.
 
@@ -191,8 +211,9 @@ Content-Type: application/json
   "protocol": "mcp",
   "transport": {
     "type": "stdio",
-    "command": "npx",
-    "args": ["-y", "@acme-demo/hl7-jira-mcp"]
+    "command": "bun",
+    "args": ["./.demo/hl7-jira-mcp.js"],
+    "cwd": "."
   },
   "tools": [
     {
@@ -217,9 +238,9 @@ Meaning:
 - this is the first-class workspace tool path
 - `hl7-jira` should show up to Shelley as a managed `workspace_*` tool
 - stdio MCP runs inside the bubblewrapped workspace runtime
-- the typical demo configuration should use `npx`
+- in this demo, the executable is `bun` and the script lives in `.demo/`
 
-### 3. Grant the agent access to the MCP tool
+### 4. Grant the agent access to the MCP tool
 
 This is also a workspace runtime API call, exposed through the manager.
 
@@ -280,17 +301,19 @@ with `access: "approval_required"`.
 ### `hl7-jira`
 
 - kind: MCP stdio workspace tool
-- implementation: MCP stdio fixture launched inside the bubblewrapped runtime,
-  ideally through `npx`
-- purpose: search a small fixture set of HL7 Jira issues
+- implementation: SDK-backed Bun MCP fixture launched inside the bubblewrapped
+  runtime with `bun ./.demo/hl7-jira-mcp.js`
+- backing data: a tiny SQLite database created inside `.demo/` on first run
+- purpose: search a small fixture set of HL7 Jira issues derived from
+  `fhir-community-search`
 - tool name exposed through MCP: `jira.search`
 
 Fixture results should include:
 
-- `FHIR-39112`
-  - title: `Validator flags Observation.component slicing without explicit discriminator metadata`
-- `FHIR-40277`
-  - title: `Clarify blood pressure component slicing examples in profiling guidance`
+- `FHIR-53953`
+  - title: `No documentation on remote interactions - timeouts, error handling, caching, performance etc.`
+- `FHIR-53960`
+  - title: `Additional Functions - Inconsistent error handling patterns`
 
 ### `ig-publisher` (optional extension)
 
@@ -442,20 +465,22 @@ Shelley invokes the MCP stdio tool `hl7-jira`, specifically the MCP tool
 
 The fixture returns:
 
-- `FHIR-39112` — `Validator flags Observation.component slicing without explicit discriminator metadata`
-- `FHIR-40277` — `Clarify blood pressure component slicing examples in profiling guidance`
+- `FHIR-53953` — `No documentation on remote interactions - timeouts, error handling, caching, performance etc.`
+- `FHIR-53960` — `Additional Functions - Inconsistent error handling patterns`
 
 Shelley summarizes:
 
-> The Jira issues are consistent with the validator output. The likely local fix
-> is still to declare slicing on `component` with a discriminator on `code`
-> before constraining the systolic and diastolic slices.
+> The Jira issues reinforce that validator and FHIRPath error handling around
+> profile constraints is still a live discussion area. For this profile, the
+> direct fix is still to declare slicing on `component` with a discriminator on
+> `code` before constraining the systolic and diastolic slices.
 
 Presenter line:
 
 > This second tool is MCP over stdio. It runs inside the bubblewrapped runtime,
-> typically through `npx`, and it shows the first-class tool path that Shelley
-> gets through the workspace tools API.
+> but the transport is still real: Shelley launches a Bun MCP server inside the
+> workspace, talks to it over stdio using the official MCP SDK, and exposes it
+> as a first-class workspace tool through the tools API.
 
 ### 6. Priya asks Shelley to fix the profile and re-run validation
 
@@ -537,6 +562,8 @@ If the live demo needs tighter narration, use this sequence:
 
 - Manager web page:
   - create workspace
+  - discover local tools from the manager-published catalog
+  - optionally pre-register the Jira MCP tool
   - show share info
   - open proxied Shelley UI
 - Topic realtime:
@@ -546,7 +573,8 @@ If the live demo needs tighter narration, use this sequence:
 - Tools:
   - runtime availability of `fhir-validator` in the shared local tools mount
   - hosted registration of `hl7-jira` as MCP stdio
-  - runtime availability of `npx` inside `bwrap`
+  - runtime availability of `bun` inside `bwrap`
+  - workspace-local Bun MCP fixture can create/query its SQLite backing store
 
 ## Optional Follow-On Demo
 

@@ -8,14 +8,17 @@ TMPDIR="$(mktemp -d)"
 MANAGER_PORT_FILE="$TMPDIR/manager-port"
 MANAGER_NAMESPACE="acme"
 RUNTIME_MODE="${SMOKE_RUNTIME_MODE:-process}"
-WORKSPACE_NAME="smoke-workspace"
-RESPONSE_TEXT="workspace-smoke-response-123"
+WORKSPACE_NAME="bp-ig-fix"
+TOPIC_NAME="bp-panel-validator"
+TEMPLATE_NAME="acme-rpm-ig"
 FILE_DIR=".workspace-smoke-$RANDOM"
 FILE_PATH="$FILE_DIR/note.txt"
 TOOL_NAME="smoke-tool-$RANDOM"
 WORKSPACE_ROOT="$TMPDIR/manager-state/$MANAGER_NAMESPACE/$WORKSPACE_NAME/workspace"
 BWRAP_TMP_NAME="manager-bwrap-$RANDOM"
 BWRAP_HOST_TMP="/tmp/$BWRAP_TMP_NAME"
+LOCAL_TOOLS_DIR="$ROOT_DIR/test/fixtures/local-tools"
+JIRA_FIXTURE="$ROOT_DIR/shelleymanager/manager/testdata/hl7-jira-mcp.js"
 MANAGER_PID=""
 CLI_PID=""
 CLI_BUFFER=""
@@ -122,6 +125,8 @@ log "Installing Bun workspace client dependencies"
   bun install
 )
 
+chmod +x "$LOCAL_TOOLS_DIR/fhir-validator/bin/fhir-validator"
+
 log "Starting shelleymanager in predictable $RUNTIME_MODE-launch mode"
 (
   cd "$ROOT_DIR"
@@ -132,6 +137,7 @@ log "Starting shelleymanager in predictable $RUNTIME_MODE-launch mode"
     -namespace "$MANAGER_NAMESPACE" \
     -runtime-mode "$RUNTIME_MODE" \
     -shelley-binary "$TMPDIR/shelley" \
+    -tools-dir "$LOCAL_TOOLS_DIR" \
     -predictable-only \
     -default-model predictable \
     >"$TMPDIR/shelleymanager.log" 2>&1
@@ -145,9 +151,10 @@ wait_for_http "http://localhost:$PORT/health"
 log "Creating workspace through the manager"
 CREATE_JSON="$(curl -sf -X POST "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces" \
   -H 'Content-Type: application/json' \
-  -d "{\"name\":\"$WORKSPACE_NAME\",\"topics\":[{\"name\":\"smoke-topic\"}]}")"
+  -d "{\"name\":\"$WORKSPACE_NAME\",\"template\":\"$TEMPLATE_NAME\",\"topics\":[{\"name\":\"$TOPIC_NAME\"}],\"runtime\":{\"localTools\":[\"fhir-validator\"]}}")"
 require_output "$CREATE_JSON" "\"name\":\"$WORKSPACE_NAME\"" "POST /apis/v1/namespaces/{ns}/workspaces creates a Shelley-backed workspace"
 require_output "$CREATE_JSON" "\"endpoint\":\"ws://localhost:$PORT/acp/$MANAGER_NAMESPACE/$WORKSPACE_NAME\"" "create response exposes public ACP endpoint"
+require_output "$CREATE_JSON" "\"fhir-validator\"" "create response includes selected local tool metadata"
 
 log "Checking manager discovery"
 WORKSPACES_JSON="$(curl -sf "http://localhost:$PORT/workspaces")"
@@ -155,9 +162,23 @@ require_output "$WORKSPACES_JSON" "$WORKSPACE_NAME" "GET /workspaces exposes the
 
 HEALTH_JSON="$(curl -sf "http://localhost:$PORT/health")"
 require_output "$HEALTH_JSON" '"mode":"shelleymanager"' "GET /health reports manager mode"
+require_output "$HEALTH_JSON" '"fhir-validator"' "GET /health reports the published local tool catalog"
+
+LOCAL_TOOLS_JSON="$(curl -sf "http://localhost:$PORT/apis/v1/local-tools")"
+require_output "$LOCAL_TOOLS_JSON" '"fhir-validator"' "GET /apis/v1/local-tools lists the validator bundle"
 
 DETAIL_JSON="$(curl -sf "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME")"
-require_output "$DETAIL_JSON" '"name":"smoke-topic"' "GET workspace detail includes the proxied runtime topics"
+require_output "$DETAIL_JSON" "\"name\":\"$TOPIC_NAME\"" "GET workspace detail includes the proxied runtime topics"
+require_output "$DETAIL_JSON" '"localTools":[{"name":"fhir-validator"' "GET workspace detail includes resolved local tool metadata"
+
+HOME_HTML="$(curl -sf "http://localhost:$PORT/")"
+require_output "$HOME_HTML" "Create Workspace" "GET / serves the manager web entry point"
+
+APP_HTML="$(curl -sf "http://localhost:$PORT/app/$MANAGER_NAMESPACE/$WORKSPACE_NAME/$TOPIC_NAME")"
+require_output "$APP_HTML" "Send Prompt" "GET /app/{ns}/{workspace}/{topic} serves the topic web UI"
+
+PROFILE_CONTENT="$(cat "$WORKSPACE_ROOT/input/fsh/BloodPressurePanel.fsh")"
+require_output "$PROFILE_CONTENT" "component contains" "workspace creation seeds the demo blood pressure profile"
 
 log "Checking manager-proxied workspace file endpoints"
 curl -sf -X PUT --data-binary 'workspace file body' "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/files/$FILE_PATH" >/dev/null
@@ -173,27 +194,80 @@ curl -sf -X DELETE "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE
 curl -sf -X DELETE "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/files/$FILE_DIR" >/dev/null
 
 log "Checking manager-proxied workspace tool endpoints"
+curl -sf -X PUT --data-binary @"$JIRA_FIXTURE" \
+  "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/files/.demo/hl7-jira-mcp.js" >/dev/null
+
 TOOL_JSON="$(curl -sf -X POST "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/tools" \
   -H 'Content-Type: application/json' \
-  -d "{\"name\":\"$TOOL_NAME\",\"description\":\"smoke tool\",\"actions\":[\"read\"],\"provider\":\"smoke\"}")"
-require_output "$TOOL_JSON" "$TOOL_NAME" "proxied POST /tools creates a workspace tool"
+  -d @- <<JSON
+{
+  "name": "hl7-jira",
+  "description": "Search realistic HL7 Jira fixture data",
+  "provider": "demo@acme.example",
+  "protocol": "mcp",
+  "transport": {
+    "type": "stdio",
+    "command": "bun",
+    "args": ["./.demo/hl7-jira-mcp.js"],
+    "cwd": "."
+  },
+  "tools": [
+    {
+      "name": "jira.search",
+      "title": "Search HL7 Jira",
+      "description": "Search realistic HL7 Jira issues related to validation and FHIRPath behavior",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string" }
+        },
+        "required": ["query"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}
+JSON
+)"
+require_output "$TOOL_JSON" '"name":"hl7-jira"' "proxied POST /tools creates the Jira MCP tool"
+require_output "$TOOL_JSON" '"command":"bun"' "workspace tool response normalizes the stdio transport"
+
+GRANT_JSON="$(curl -sf -X POST "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/tools/hl7-jira/grants" \
+  -H 'Content-Type: application/json' \
+  -d '{"subject":"agent:*","tools":["jira.search"],"access":"allowed"}')"
+require_output "$GRANT_JSON" '"jira.search"' "proxied POST /tools/{tool}/grants accepts RFC-shaped tool grants"
 
 TOOLS_JSON="$(curl -sf "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/tools")"
-require_output "$TOOLS_JSON" "$TOOL_NAME" "proxied GET /tools lists the created tool"
-
-curl -sf -X DELETE "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/tools/$TOOL_NAME" >/dev/null
+require_output "$TOOLS_JSON" '"hl7-jira"' "proxied GET /tools lists the Jira MCP tool"
 
 log "Running real Bun CLI against shelleymanager"
 (
   cd "$AW_DIR"
-  coproc CLI { WS_MANAGER="http://localhost:$PORT" bun run cli.ts connect "$WORKSPACE_NAME" smoke-topic 2>&1; }
-  exec 3>&"${CLI[1]}"
-  exec 4<&"${CLI[0]}"
+  coproc CLI1 { WS_MANAGER="http://localhost:$PORT" bun run cli.ts connect "$WORKSPACE_NAME" "$TOPIC_NAME" 2>&1; }
+  exec 3>&"${CLI1[1]}"
+  exec 4<&"${CLI1[0]}"
 
   read_cli_until "Connected to topic" "cli.ts connected via /workspaces discovery"
-  printf 'echo: %s\n' "$RESPONSE_TEXT" >&3
+  printf '%s\n' 'bash: fhir-validator input/fsh/BloodPressurePanel.fsh' >&3
   read_cli_until "thinking..." "cli.ts saw live workspace system update"
-  read_cli_until "$RESPONSE_TEXT" "cli.ts received agent response"
+  read_cli_until "[tool]" "cli.ts saw the validator bash tool invocation"
+  read_cli_until "FHIR Validator 6.5.0" "cli.ts received validator output"
+  read_cli_until "Observation.component" "validator output explains the missing slicing metadata"
+  printf '/quit\n' >&3
+  read_cli_until "Disconnected." "first cli session disconnected cleanly"
+  exec 3>&-
+  exec 4<&-
+
+  coproc CLI2 { WS_MANAGER="http://localhost:$PORT" bun run cli.ts connect "$WORKSPACE_NAME" "$TOPIC_NAME" 2>&1; }
+  exec 3>&"${CLI2[1]}"
+  exec 4<&"${CLI2[0]}"
+
+  read_cli_until "Connected to topic" "second cli session connected"
+  read_cli_until "FHIR Validator 6.5.0" "late join replay includes prior validator output"
+  read_cli_until "Observation.component" "late join replay includes the validator failure detail"
+  printf '%s\n' 'workspace_tool_json: hl7-jira jira.search {"query":"validation error handling"}' >&3
+  read_cli_until "FHIR-53953" "cli.ts received the Jira MCP search result"
+  read_cli_until "FHIR-53960" "cli.ts received multiple realistic Jira hits"
 
   if [[ "$RUNTIME_MODE" == "bwrap" ]]; then
     printf 'bash: touch bwrap-inside.txt && touch /tmp/%s && echo bwrap-ok\n' "$BWRAP_TMP_NAME" >&3
@@ -202,21 +276,20 @@ log "Running real Bun CLI against shelleymanager"
   fi
 
   printf '/quit\n' >&3
-  read_cli_until "Disconnected." "cli.ts disconnected cleanly"
+  read_cli_until "Disconnected." "second cli session disconnected cleanly"
   exec 3>&-
   exec 4<&-
-  wait "$CLI_PID"
 )
 
 log "Checking topic listing through manager routes"
 TOPICS_JSON="$(curl -sf "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/topics")"
-require_output "$TOPICS_JSON" "smoke-topic" "proxied GET /topics lists the connected topic"
+require_output "$TOPICS_JSON" "$TOPIC_NAME" "proxied GET /topics lists the connected topic"
 
 CLI_TOPICS_OUTPUT="$(
   cd "$AW_DIR"
   WS_MANAGER="http://localhost:$PORT" bun run cli.ts topics "$WORKSPACE_NAME"
 )"
-require_output "$CLI_TOPICS_OUTPUT" "smoke-topic" "cli.ts topics lists the connected topic"
+require_output "$CLI_TOPICS_OUTPUT" "$TOPIC_NAME" "cli.ts topics lists the connected topic"
 
 if [[ "$RUNTIME_MODE" == "bwrap" ]]; then
   log "Checking bwrap filesystem isolation"

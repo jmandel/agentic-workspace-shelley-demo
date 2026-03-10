@@ -86,7 +86,7 @@ func (l CommandLauncher) Launch(ctx context.Context, spec LaunchSpec) (*Runtime,
 	if err := os.MkdirAll(filepath.Join(spec.StateDir, "home"), 0o755); err != nil {
 		return nil, err
 	}
-	if _, err := l.normalizedSharedToolsDir(); err != nil {
+	if err := l.prepareWorkspaceTools(spec, mode); err != nil {
 		return nil, err
 	}
 	if mode == "bwrap" {
@@ -176,7 +176,7 @@ func (l CommandLauncher) buildProcessCommand(spec LaunchSpec, hostPort int) (*ex
 	}
 	args := l.shelleyArgs(spec.DBPath, spec.WorkspaceDir, hostPort, l.ConfigPath)
 	cmd := exec.Command(l.ShelleyBinary, args...)
-	cmd.Env = l.runtimeEnv(os.Environ(), spec.Name, false)
+	cmd.Env = l.runtimeEnv(os.Environ(), spec, false)
 	return cmd, nil
 }
 
@@ -201,15 +201,15 @@ func (l CommandLauncher) buildDockerCommand(spec LaunchSpec, hostPort int) (*exe
 		"--name", containerName,
 		"-p", fmt.Sprintf("127.0.0.1:%d:%d", hostPort, hostPort),
 		"-e", "WORKSPACE_NAME=" + spec.Name,
+		"-e", "PATH=" + prependPath(filepath.ToSlash(filepath.Join(runtimeSharedToolsDir, "bin")), os.Getenv("PATH")),
 		"-v", spec.StateDir + ":" + containerState,
 		"-v", spec.WorkspaceDir + ":" + containerWorkspace,
+		"-v", filepath.Join(spec.StateDir, "tools") + ":" + runtimeSharedToolsDir,
 		"-w", containerWorkspace,
 	}
-	if sharedToolsDir, err := l.normalizedSharedToolsDir(); err != nil {
-		return nil, err
-	} else if sharedToolsDir != "" {
-		args = append(args, "-e", "WORKSPACE_TOOLS_DIR="+runtimeSharedToolsDir)
-		args = append(args, "-v", sharedToolsDir+":"+runtimeSharedToolsDir+":ro")
+	args = append(args, "-e", "WORKSPACE_TOOLS_DIR="+runtimeSharedToolsDir)
+	for _, tool := range spec.LocalTools {
+		args = append(args, "-v", tool.HostRoot+":"+filepath.ToSlash(filepath.Join(runtimeSharedToolsDir, tool.Name))+":ro")
 	}
 	args = append(args, image)
 	if entrypoint != "" {
@@ -237,6 +237,7 @@ func (l CommandLauncher) buildBwrapCommand(spec LaunchSpec, hostPort int) (*exec
 	args = append(args, l.bwrapRuntimeFSArgs(spec)...)
 	args = append(args,
 		"--bind", spec.StateDir, bwrapSandboxRoot,
+		"--bind", filepath.Join(spec.StateDir, "tools"), runtimeSharedToolsDir,
 		"--bind", filepath.Join(spec.StateDir, "tmp"), "/tmp",
 		"--dev", "/dev",
 		"--proc", "/proc",
@@ -244,12 +245,11 @@ func (l CommandLauncher) buildBwrapCommand(spec LaunchSpec, hostPort int) (*exec
 		"--setenv", "WORKSPACE_NAME", spec.Name,
 		"--setenv", "HOME", bwrapSandboxHome,
 		"--setenv", "TMPDIR", "/tmp",
+		"--setenv", "WORKSPACE_TOOLS_DIR", runtimeSharedToolsDir,
+		"--setenv", "PATH", prependPath(filepath.ToSlash(filepath.Join(runtimeSharedToolsDir, "bin")), os.Getenv("PATH")),
 	)
-	if sharedToolsDir, err := l.normalizedSharedToolsDir(); err != nil {
-		return nil, err
-	} else if sharedToolsDir != "" {
-		args = append(args, "--ro-bind", sharedToolsDir, runtimeSharedToolsDir)
-		args = append(args, "--setenv", "WORKSPACE_TOOLS_DIR", runtimeSharedToolsDir)
+	for _, tool := range spec.LocalTools {
+		args = append(args, "--ro-bind", tool.HostRoot, filepath.ToSlash(filepath.Join(runtimeSharedToolsDir, tool.Name)))
 	}
 	args = append(args, "--", bwrapSandboxBinary)
 	args = append(args, l.shelleyArgs(bwrapSandboxDB, bwrapSandboxWorkspace, hostPort, l.bwrapConfigPath(spec))...)
@@ -368,6 +368,39 @@ func (l CommandLauncher) WorkspacePaths(namespace, name string) (LaunchSpec, err
 	}, nil
 }
 
+func (l CommandLauncher) prepareWorkspaceTools(spec LaunchSpec, mode string) error {
+	toolsRoot := filepath.Join(spec.StateDir, "tools")
+	binDir := filepath.Join(toolsRoot, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		return err
+	}
+	if len(spec.LocalTools) == 0 {
+		return nil
+	}
+
+	for _, tool := range spec.LocalTools {
+		toolRoot := filepath.Join(toolsRoot, tool.Name)
+		switch mode {
+		case "process":
+			_ = os.RemoveAll(toolRoot)
+			if err := os.Symlink(tool.HostRoot, toolRoot); err != nil {
+				return fmt.Errorf("link local tool %s: %w", tool.Name, err)
+			}
+		default:
+			if err := os.MkdirAll(toolRoot, 0o755); err != nil {
+				return fmt.Errorf("prepare local tool mount %s: %w", tool.Name, err)
+			}
+		}
+
+		for _, cmd := range tool.Commands {
+			if err := writeLocalToolWrapper(filepath.Join(binDir, cmd.Name), tool.Name, cmd.RelativePath); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (l CommandLauncher) prepareBwrapState(spec LaunchSpec) error {
 	binDir := filepath.Join(spec.StateDir, "bin")
 	configDir := filepath.Join(spec.StateDir, "config")
@@ -401,36 +434,16 @@ func (l CommandLauncher) bwrapRuntimeFSArgs(spec LaunchSpec) []string {
 	return args
 }
 
-func (l CommandLauncher) normalizedSharedToolsDir() (string, error) {
-	raw := strings.TrimSpace(l.SharedToolsDir)
-	if raw == "" {
-		return "", nil
-	}
-	abs, err := filepath.Abs(raw)
-	if err != nil {
-		return "", fmt.Errorf("resolve shared tools dir: %w", err)
-	}
-	info, err := os.Stat(abs)
-	if err != nil {
-		return "", fmt.Errorf("shared tools dir %q: %w", abs, err)
-	}
-	if !info.IsDir() {
-		return "", fmt.Errorf("shared tools dir %q is not a directory", abs)
-	}
-	return abs, nil
-}
-
-func (l CommandLauncher) runtimeEnv(base []string, workspaceName string, sandboxed bool) []string {
+func (l CommandLauncher) runtimeEnv(base []string, spec LaunchSpec, sandboxed bool) []string {
 	env := append([]string{}, base...)
-	env = append(env, "WORKSPACE_NAME="+workspaceName)
-	toolsDir, err := l.normalizedSharedToolsDir()
-	if err != nil || toolsDir == "" {
-		return env
-	}
+	env = append(env, "WORKSPACE_NAME="+spec.Name)
+	toolsDir := filepath.Join(spec.StateDir, "tools")
 	if sandboxed {
 		toolsDir = runtimeSharedToolsDir
 	}
-	return append(env, "WORKSPACE_TOOLS_DIR="+toolsDir)
+	env = append(env, "WORKSPACE_TOOLS_DIR="+toolsDir)
+	pathValue := prependPath(filepath.ToSlash(filepath.Join(toolsDir, "bin")), os.Getenv("PATH"))
+	return append(env, "PATH="+pathValue)
 }
 
 func (l CommandLauncher) bwrapConfigPath(spec LaunchSpec) string {
@@ -473,4 +486,23 @@ func copyFile(src, dst string, perm os.FileMode) error {
 		return err
 	}
 	return out.Close()
+}
+
+func writeLocalToolWrapper(path, toolName, relativeCommand string) error {
+	script := "#!/bin/sh\n" +
+		"set -eu\n" +
+		"exec \"$WORKSPACE_TOOLS_DIR/" + toolName + "/" + filepath.ToSlash(relativeCommand) + "\" \"$@\"\n"
+	return os.WriteFile(path, []byte(script), 0o755)
+}
+
+func prependPath(dir, current string) string {
+	dir = strings.TrimSpace(dir)
+	current = strings.TrimSpace(current)
+	if dir == "" {
+		return current
+	}
+	if current == "" {
+		return dir
+	}
+	return dir + string(os.PathListSeparator) + current
 }

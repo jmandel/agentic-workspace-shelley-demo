@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -20,17 +22,22 @@ type fakeLauncher struct {
 	runtime  *Runtime
 	launches []LaunchSpec
 	stops    int
+	baseDir  string
 }
 
 func (f *fakeLauncher) Name() string { return "fake" }
 
 func (f *fakeLauncher) WorkspacePaths(namespace, name string) (LaunchSpec, error) {
+	base := "/tmp/" + namespace + "/" + name
+	if f.baseDir != "" {
+		base = f.baseDir
+	}
 	return LaunchSpec{
 		Namespace:    namespace,
 		Name:         name,
-		StateDir:     "/tmp/" + namespace + "/" + name,
-		WorkspaceDir: "/tmp/" + namespace + "/" + name + "/workspace",
-		DBPath:       "/tmp/" + namespace + "/" + name + "/shelley.db",
+		StateDir:     base,
+		WorkspaceDir: base + "/workspace",
+		DBPath:       base + "/shelley.db",
 	}, nil
 }
 
@@ -321,5 +328,190 @@ func TestDecodeTopicsObjectForm(t *testing.T) {
 	}
 	if got, want := strings.Join(topics, ","), "general,debug"; got != want {
 		t.Fatalf("topics = %q, want %q", got, want)
+	}
+}
+
+func TestManagerLocalToolsCatalogAndWorkspaceSelection(t *testing.T) {
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/ws/health":
+			io.WriteString(w, `{"status":"ok"}`)
+		case r.URL.Path == "/ws/topics" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{"name":"bp-panel-validator"}`)
+		case r.URL.Path == "/ws/topics":
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `[{"name":"bp-panel-validator","clients":0,"busy":false,"createdAt":"2026-03-10T00:00:00Z"}]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer runtime.Close()
+	runtimeURL, _ := url.Parse(runtime.URL)
+
+	baseDir := t.TempDir()
+	launcher := &fakeLauncher{
+		baseDir: baseDir,
+		runtime: &Runtime{
+			Name:    "demo",
+			APIBase: runtimeURL,
+			Mode:    "fake",
+			Health:  func(context.Context) error { return nil },
+			Stop:    func(context.Context) error { return nil },
+		},
+	}
+	localTools := []LocalTool{{
+		Name:         "fhir-validator",
+		Description:  "FHIR Validator CLI",
+		Guidance:     "Run through bash as `fhir-validator`.",
+		Requirements: []string{"java"},
+		HostRoot:     t.TempDir(),
+		Commands:     []LocalToolCommand{{Name: "fhir-validator", RelativePath: "bin/fhir-validator"}},
+	}}
+	mgr, err := New(Config{DefaultNamespace: "acme", Launcher: launcher, LocalTools: localTools})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(mgr)
+	defer server.Close()
+
+	catalogRes, err := http.Get(server.URL + "/apis/v1/local-tools")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalogRes.Body.Close()
+	if catalogRes.StatusCode != http.StatusOK {
+		t.Fatalf("catalog status = %d", catalogRes.StatusCode)
+	}
+	var catalog []localToolInfo
+	if err := json.NewDecoder(catalogRes.Body).Decode(&catalog); err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog) != 1 || catalog[0].Name != "fhir-validator" {
+		t.Fatalf("unexpected catalog %#v", catalog)
+	}
+	if len(catalog[0].Requirements) != 1 || catalog[0].Requirements[0] != "java" {
+		t.Fatalf("unexpected catalog requirements %#v", catalog[0].Requirements)
+	}
+
+	createBody := `{
+		"name":"demo",
+		"template":"acme-rpm-ig",
+		"topics":[{"name":"bp-panel-validator"}],
+		"runtime":{"localTools":["fhir-validator"]}
+	}`
+	res, err := http.Post(server.URL+"/apis/v1/namespaces/acme/workspaces", "application/json", strings.NewReader(createBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d", res.StatusCode)
+	}
+
+	var detail workspaceDetail
+	if err := json.NewDecoder(res.Body).Decode(&detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.Runtime == nil || len(detail.Runtime.LocalTools) != 1 || detail.Runtime.LocalTools[0].Name != "fhir-validator" {
+		t.Fatalf("unexpected runtime local tools %#v", detail.Runtime)
+	}
+
+	launcher.mu.Lock()
+	if len(launcher.launches) != 1 || len(launcher.launches[0].LocalTools) != 1 || launcher.launches[0].LocalTools[0].Name != "fhir-validator" {
+		launcher.mu.Unlock()
+		t.Fatalf("unexpected launch specs %#v", launcher.launches)
+	}
+	launchSpec := launcher.launches[0]
+	launcher.mu.Unlock()
+
+	guidancePath := filepath.Join(launchSpec.WorkspaceDir, ".shelley", "AGENTS.md")
+	content, err := os.ReadFile(guidancePath)
+	if err != nil {
+		t.Fatalf("failed to read local tool guidance: %v", err)
+	}
+	if !strings.Contains(string(content), "fhir-validator") {
+		t.Fatalf("expected local tool guidance to mention fhir-validator, got %q", string(content))
+	}
+
+	seededProfile, err := os.ReadFile(filepath.Join(launchSpec.WorkspaceDir, "input", "fsh", "BloodPressurePanel.fsh"))
+	if err != nil {
+		t.Fatalf("failed to read seeded demo template profile: %v", err)
+	}
+	if !strings.Contains(string(seededProfile), "component contains") {
+		t.Fatalf("expected seeded demo profile content, got %q", string(seededProfile))
+	}
+}
+
+func TestManagerUIRoutes(t *testing.T) {
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/ws/health":
+			io.WriteString(w, `{"status":"ok"}`)
+		case r.URL.Path == "/ws/topics" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{"name":"bp-panel-validator"}`)
+		case r.URL.Path == "/ws/topics":
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `[{"name":"bp-panel-validator","clients":0,"busy":false,"createdAt":"2026-03-10T00:00:00Z"}]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer runtime.Close()
+	runtimeURL, _ := url.Parse(runtime.URL)
+
+	launcher := &fakeLauncher{
+		runtime: &Runtime{
+			Name:    "bp-ig-fix",
+			APIBase: runtimeURL,
+			Mode:    "fake",
+			Health:  func(context.Context) error { return nil },
+			Stop:    func(context.Context) error { return nil },
+		},
+	}
+	mgr, err := New(Config{
+		DefaultNamespace: "acme",
+		Launcher:         launcher,
+		LocalTools: []LocalTool{{
+			Name:        "fhir-validator",
+			Description: "FHIR Validator CLI",
+			HostRoot:    t.TempDir(),
+			Commands:    []LocalToolCommand{{Name: "fhir-validator", RelativePath: "bin/fhir-validator"}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(mgr)
+	defer server.Close()
+
+	homeRes, err := http.Get(server.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer homeRes.Body.Close()
+	homeBody, _ := io.ReadAll(homeRes.Body)
+	if !strings.Contains(string(homeBody), "Create Workspace") || !strings.Contains(string(homeBody), "/apis/v1/local-tools") {
+		t.Fatalf("unexpected home page body: %s", homeBody)
+	}
+
+	createRes, err := http.Post(server.URL+"/apis/v1/namespaces/acme/workspaces", "application/json", strings.NewReader(`{"name":"bp-ig-fix","topics":[{"name":"bp-panel-validator"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	createRes.Body.Close()
+	if createRes.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d", createRes.StatusCode)
+	}
+
+	appRes, err := http.Get(server.URL + "/app/acme/bp-ig-fix/bp-panel-validator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer appRes.Body.Close()
+	appBody, _ := io.ReadAll(appRes.Body)
+	if !strings.Contains(string(appBody), "WS_MANAGER") || !strings.Contains(string(appBody), "/acp/acme/bp-ig-fix/topics/bp-panel-validator") {
+		t.Fatalf("unexpected app page body: %s", appBody)
 	}
 }

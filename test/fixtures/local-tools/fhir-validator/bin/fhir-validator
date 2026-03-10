@@ -1,0 +1,27 @@
+#!/bin/sh
+set -eu
+
+target="${1:-input/fsh/BloodPressurePanel.fsh}"
+
+if [ ! -f "$target" ]; then
+  printf 'FHIR Validator 6.5.0 (demo fixture)\n'
+  printf 'Error: %s not found\n' "$target"
+  exit 2
+fi
+
+if grep -q 'component \^slicing\.discriminator\[0\]\.type = #pattern' "$target" \
+  && grep -q 'component \^slicing\.discriminator\[0\]\.path = "code"' "$target" \
+  && grep -q 'component \^slicing\.rules = #open' "$target"; then
+  printf 'FHIR Validator 6.5.0 (demo fixture)\n'
+  printf 'Success: %s\n' "$target"
+  printf 'No errors, 0 warnings\n'
+  exit 0
+fi
+
+printf 'FHIR Validator 6.5.0 (demo fixture)\n'
+printf 'Error @ StructureDefinition.differential.element[Observation.component]: Slices on Observation.component require slicing.discriminator and slicing.rules\n'
+printf 'Hint: add:\n'
+printf '* component ^slicing.discriminator[0].type = #pattern\n'
+printf '* component ^slicing.discriminator[0].path = "code"\n'
+printf '* component ^slicing.rules = #open\n'
+exit 1

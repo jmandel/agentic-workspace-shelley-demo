@@ -21,12 +21,14 @@ import (
 type Config struct {
 	DefaultNamespace string
 	Launcher         Launcher
+	LocalTools       []LocalTool
 	Logger           *slog.Logger
 }
 
 type Manager struct {
 	defaultNamespace string
 	launcher         Launcher
+	localTools       []LocalTool
 	logger           *slog.Logger
 
 	mu         sync.RWMutex
@@ -39,10 +41,12 @@ type workspaceKey struct {
 }
 
 type Workspace struct {
-	Namespace string
-	Name      string
-	CreatedAt time.Time
-	Runtime   Runtime
+	Namespace  string
+	Name       string
+	CreatedAt  time.Time
+	Template   string
+	LocalTools []LocalTool
+	Runtime    Runtime
 }
 
 type Runtime struct {
@@ -65,11 +69,18 @@ type LaunchSpec struct {
 	StateDir     string
 	WorkspaceDir string
 	DBPath       string
+	LocalTools   []LocalTool
 }
 
 type workspaceCreateRequest struct {
-	Name   string          `json:"name"`
-	Topics json.RawMessage `json:"topics,omitempty"`
+	Name     string                   `json:"name"`
+	Template string                   `json:"template,omitempty"`
+	Topics   json.RawMessage          `json:"topics,omitempty"`
+	Runtime  *workspaceRuntimeRequest `json:"runtime,omitempty"`
+}
+
+type workspaceRuntimeRequest struct {
+	LocalTools []string `json:"localTools,omitempty"`
 }
 
 type workspaceSummary struct {
@@ -85,12 +96,17 @@ type workspaceSummary struct {
 
 type workspaceDetail struct {
 	workspaceSummary
-	Topics []workspaceTopicRef `json:"topics,omitempty"`
+	Topics  []workspaceTopicRef   `json:"topics,omitempty"`
+	Runtime *workspaceRuntimeInfo `json:"runtime,omitempty"`
 }
 
 type workspaceTopicRef struct {
 	Name string `json:"name"`
 	ACP  string `json:"acp,omitempty"`
+}
+
+type workspaceRuntimeInfo struct {
+	LocalTools []localToolInfo `json:"localTools,omitempty"`
 }
 
 type runtimeTopicInfo struct {
@@ -112,6 +128,7 @@ func New(cfg Config) (*Manager, error) {
 	return &Manager{
 		defaultNamespace: namespace,
 		launcher:         cfg.Launcher,
+		localTools:       append([]LocalTool(nil), cfg.LocalTools...),
 		logger:           logger,
 		workspaces:       map[workspaceKey]*Workspace{},
 	}, nil
@@ -119,8 +136,14 @@ func New(cfg Config) (*Manager, error) {
 
 func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
+	case r.URL.Path == "/":
+		m.handleHome(w, r)
+	case strings.HasPrefix(r.URL.Path, "/app/"):
+		m.handleApp(w, r)
 	case r.URL.Path == "/health":
 		m.handleHealth(w, r)
+	case r.URL.Path == "/apis/v1/local-tools":
+		m.handleLocalTools(w, r)
 	case r.URL.Path == "/workspaces":
 		m.handleCompatCollection(w, r)
 	case strings.HasPrefix(r.URL.Path, "/workspaces/"):
@@ -169,7 +192,16 @@ func (m *Manager) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"launcher":    m.launcher.Name(),
 		"mode":        "shelleymanager",
 		"runtimePath": "/ws/*",
+		"localTools":  localToolInfos(m.localTools),
 	})
+}
+
+func (m *Manager) handleLocalTools(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, http.StatusOK, localToolInfos(m.localTools))
 }
 
 func (m *Manager) handleCompatCollection(w http.ResponseWriter, r *http.Request) {
@@ -331,6 +363,15 @@ func (m *Manager) createWorkspace(w http.ResponseWriter, r *http.Request, namesp
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	localToolNames := []string(nil)
+	if req.Runtime != nil {
+		localToolNames = req.Runtime.LocalTools
+	}
+	localTools, err := ResolveLocalTools(m.localTools, localToolNames)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	key := workspaceKey{namespace: namespace, name: req.Name}
 
 	m.mu.Lock()
@@ -347,6 +388,17 @@ func (m *Manager) createWorkspace(w http.ResponseWriter, r *http.Request, namesp
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	spec.LocalTools = append([]LocalTool(nil), localTools...)
+	if err := seedWorkspaceTemplate(spec.WorkspaceDir, req.Template); err != nil {
+		m.logger.Error("failed to seed workspace template", "namespace", namespace, "name", req.Name, "template", req.Template, "error", err)
+		http.Error(w, "failed to prepare workspace template", http.StatusInternalServerError)
+		return
+	}
+	if err := writeWorkspaceLocalToolGuidance(spec.WorkspaceDir, localTools); err != nil {
+		m.logger.Error("failed to write workspace local tool guidance", "namespace", namespace, "name", req.Name, "error", err)
+		http.Error(w, "failed to prepare workspace guidance", http.StatusInternalServerError)
+		return
+	}
 	runtime, err := m.launcher.Launch(r.Context(), spec)
 	if err != nil {
 		m.logger.Error("failed to launch workspace runtime", "namespace", namespace, "name", req.Name, "error", err)
@@ -354,10 +406,12 @@ func (m *Manager) createWorkspace(w http.ResponseWriter, r *http.Request, namesp
 		return
 	}
 	ws := &Workspace{
-		Namespace: namespace,
-		Name:      req.Name,
-		CreatedAt: time.Now().UTC(),
-		Runtime:   *runtime,
+		Namespace:  namespace,
+		Name:       req.Name,
+		CreatedAt:  time.Now().UTC(),
+		Template:   strings.TrimSpace(req.Template),
+		LocalTools: append([]LocalTool(nil), localTools...),
+		Runtime:    *runtime,
 	}
 
 	if err := m.ensureTopics(r.Context(), ws, topics); err != nil {
@@ -542,6 +596,9 @@ func (m *Manager) compatDetail(r *http.Request, ws *Workspace, topics []string) 
 	if len(topics) > 0 {
 		resp["topics"] = topics
 	}
+	if len(ws.LocalTools) > 0 {
+		resp["runtime"] = workspaceRuntimeInfo{LocalTools: localToolInfos(ws.LocalTools)}
+	}
 	return resp
 }
 
@@ -575,6 +632,9 @@ func (m *Manager) specDetail(r *http.Request, ws *Workspace, topics []string) wo
 			Endpoint:  m.specACPBase(r, ws),
 			CreatedAt: ws.CreatedAt.Format(time.RFC3339),
 		},
+	}
+	if len(ws.LocalTools) > 0 {
+		resp.Runtime = &workspaceRuntimeInfo{LocalTools: localToolInfos(ws.LocalTools)}
 	}
 	for _, topic := range topics {
 		resp.Topics = append(resp.Topics, workspaceTopicRef{

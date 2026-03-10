@@ -7,12 +7,10 @@ import (
 )
 
 func TestBuildProcessCommandSetsWorkspaceToolsEnv(t *testing.T) {
-	toolsDir := t.TempDir()
 	launcher := CommandLauncher{
-		Mode:           "process",
-		StateRoot:      "/tmp/state",
-		ShelleyBinary:  "/usr/local/bin/shelley",
-		SharedToolsDir: toolsDir,
+		Mode:          "process",
+		StateRoot:     "/tmp/state",
+		ShelleyBinary: "/usr/local/bin/shelley",
 	}
 	spec, err := launcher.WorkspacePaths("acme", "demo")
 	if err != nil {
@@ -28,17 +26,18 @@ func TestBuildProcessCommandSetsWorkspaceToolsEnv(t *testing.T) {
 	if !strings.Contains(env, "WORKSPACE_NAME=demo") {
 		t.Fatalf("expected workspace name env, got %q", env)
 	}
-	if !strings.Contains(env, "WORKSPACE_TOOLS_DIR="+toolsDir) {
+	if !strings.Contains(env, "WORKSPACE_TOOLS_DIR="+filepath.Join(spec.StateDir, "tools")) {
 		t.Fatalf("expected tools env, got %q", env)
+	}
+	if !strings.Contains(env, "PATH="+filepath.Join(spec.StateDir, "tools", "bin")) {
+		t.Fatalf("expected tools bin in path, got %q", env)
 	}
 }
 
 func TestBuildDockerCommand(t *testing.T) {
-	toolsDir := t.TempDir()
 	launcher := CommandLauncher{
 		Mode:            "docker",
 		StateRoot:       "/tmp/state",
-		SharedToolsDir:  toolsDir,
 		DockerBinary:    "docker",
 		DockerImage:     "example/shelley:latest",
 		DockerCommand:   "shelley",
@@ -64,7 +63,7 @@ func TestBuildDockerCommand(t *testing.T) {
 		"--name shelley-acme-demo",
 		"-p 127.0.0.1:43123:43123",
 		"-v " + spec.WorkspaceDir + ":/workspace",
-		"-v " + toolsDir + ":/tools:ro",
+		"-v " + filepath.Join(spec.StateDir, "tools") + ":/tools",
 		"-e WORKSPACE_TOOLS_DIR=/tools",
 		"example/shelley:latest shelley",
 		"-db /state/shelley.db",
@@ -76,13 +75,39 @@ func TestBuildDockerCommand(t *testing.T) {
 	}
 }
 
+func TestBuildDockerCommandMountsSelectedLocalToolRoots(t *testing.T) {
+	toolRoot := t.TempDir()
+	launcher := CommandLauncher{
+		Mode:         "docker",
+		StateRoot:    "/tmp/state",
+		DockerBinary: "docker",
+		DockerImage:  "example/shelley:latest",
+	}
+	spec, err := launcher.WorkspacePaths("acme", "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.LocalTools = []LocalTool{{
+		Name:     "fhir-validator",
+		HostRoot: toolRoot,
+		Commands: []LocalToolCommand{{Name: "fhir-validator", RelativePath: "bin/fhir-validator"}},
+	}}
+
+	cmd, err := launcher.buildDockerCommand(spec, 43123)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(cmd.Args, " ")
+	if !strings.Contains(got, "-v "+toolRoot+":/tools/fhir-validator:ro") {
+		t.Fatalf("expected selected local tool mount, got %q", got)
+	}
+}
+
 func TestBuildBwrapCommand(t *testing.T) {
-	toolsDir := t.TempDir()
 	launcher := CommandLauncher{
 		Mode:            "bwrap",
 		StateRoot:       "/tmp/state",
 		ShelleyBinary:   "/usr/local/bin/shelley",
-		SharedToolsDir:  toolsDir,
 		BwrapBinary:     "bwrap",
 		DefaultModel:    "predictable",
 		PredictableOnly: true,
@@ -105,8 +130,8 @@ func TestBuildBwrapCommand(t *testing.T) {
 		"--die-with-parent",
 		"--ro-bind /usr /usr",
 		"--bind " + spec.StateDir + " /sandbox",
+		"--bind " + filepath.Join(spec.StateDir, "tools") + " /tools",
 		"--bind " + filepath.Join(spec.StateDir, "tmp") + " /tmp",
-		"--ro-bind " + toolsDir + " /tools",
 		"--share-net",
 		"--setenv WORKSPACE_NAME demo",
 		"--setenv WORKSPACE_TOOLS_DIR /tools",
@@ -117,5 +142,33 @@ func TestBuildBwrapCommand(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected bwrap args to contain %q, got %q", want, got)
 		}
+	}
+}
+
+func TestBuildBwrapCommandMountsSelectedLocalToolRoots(t *testing.T) {
+	toolRoot := t.TempDir()
+	launcher := CommandLauncher{
+		Mode:          "bwrap",
+		StateRoot:     "/tmp/state",
+		ShelleyBinary: "/usr/local/bin/shelley",
+		BwrapBinary:   "bwrap",
+	}
+	spec, err := launcher.WorkspacePaths("acme", "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.LocalTools = []LocalTool{{
+		Name:     "fhir-validator",
+		HostRoot: toolRoot,
+		Commands: []LocalToolCommand{{Name: "fhir-validator", RelativePath: "bin/fhir-validator"}},
+	}}
+
+	cmd, err := launcher.buildBwrapCommand(spec, 43123)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(cmd.Args, " ")
+	if !strings.Contains(got, "--ro-bind "+toolRoot+" /tools/fhir-validator") {
+		t.Fatalf("expected selected local tool ro-bind, got %q", got)
 	}
 }

@@ -17,21 +17,22 @@ import (
 
 func main() {
 	var cfg struct {
-		Listen          string
-		PortFile        string
-		Namespace       string
-		StateDir        string
-		RuntimeMode     string
-		ShelleyBinary   string
-		SharedToolsDir  string
-		DockerBinary    string
-		DockerImage     string
-		DockerCommand   string
-		BwrapBinary     string
-		DefaultModel    string
-		PredictableOnly bool
-		ConfigPath      string
-		Debug           bool
+		Listen            string
+		PortFile          string
+		Namespace         string
+		StateDir          string
+		RuntimeMode       string
+		ShelleyBinary     string
+		SharedToolsDir    string
+		LocalToolsCatalog string
+		DockerBinary      string
+		DockerImage       string
+		DockerCommand     string
+		BwrapBinary       string
+		DefaultModel      string
+		PredictableOnly   bool
+		ConfigPath        string
+		Debug             bool
 	}
 
 	flag.StringVar(&cfg.Listen, "listen", "127.0.0.1:31337", "Address to listen on")
@@ -41,6 +42,7 @@ func main() {
 	flag.StringVar(&cfg.RuntimeMode, "runtime-mode", "process", "Runtime launch mode: process, docker, or bwrap")
 	flag.StringVar(&cfg.ShelleyBinary, "shelley-binary", "", "Path to Shelley binary for process/bwrap launch modes")
 	flag.StringVar(&cfg.SharedToolsDir, "tools-dir", "", "Optional shared host tools dir mounted read-only into runtimes at /tools")
+	flag.StringVar(&cfg.LocalToolsCatalog, "local-tools-catalog", "", "Optional JSON catalog describing manager-provided local tools")
 	flag.StringVar(&cfg.DockerBinary, "docker-binary", "docker", "Docker CLI binary")
 	flag.StringVar(&cfg.DockerImage, "docker-image", "", "Shelley runtime image for docker mode")
 	flag.StringVar(&cfg.DockerCommand, "docker-command", "shelley", "Command inside the docker image that starts Shelley")
@@ -72,9 +74,16 @@ func main() {
 		DebugRuntime:    cfg.Debug,
 	}
 
+	localTools, err := manager.LoadLocalToolsCatalog(cfg.SharedToolsDir, cfg.LocalToolsCatalog)
+	if err != nil {
+		logger.Error("failed to load local tools catalog", "tools_dir", cfg.SharedToolsDir, "catalog", cfg.LocalToolsCatalog, "error", err)
+		os.Exit(1)
+	}
+
 	mgr, err := manager.New(manager.Config{
 		DefaultNamespace: cfg.Namespace,
 		Launcher:         launcher,
+		LocalTools:       localTools,
 		Logger:           logger,
 	})
 	if err != nil {

@@ -1,0 +1,13 @@
+[
+  {
+    "name": "fhir-validator",
+    "description": "Demo FHIR validator wrapper for the blood pressure panel workspace.",
+    "guidance": "Use `fhir-validator input/fsh/BloodPressurePanel.fsh` through bash. The demo fixture reports the missing Observation.component slicing metadata until the profile is fixed.",
+    "root": "fhir-validator",
+    "commands": [
+      {
+        "name": "fhir-validator"
+      }
+    ]
+  }
+]
