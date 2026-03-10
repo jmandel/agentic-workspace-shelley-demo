@@ -806,6 +806,9 @@ func TestManagerUIRoutes(t *testing.T) {
 	if !strings.Contains(string(homeBody), "Participant Name") || !strings.Contains(string(homeBody), "WS Language Tutorial") {
 		t.Fatalf("expected home page participant and tutorial controls, got %s", homeBody)
 	}
+	if !strings.Contains(string(homeBody), "history.scrollRestoration = 'manual'") || !strings.Contains(string(homeBody), "window.scrollTo(0, 0)") {
+		t.Fatalf("expected home page body to disable animated/implicit scroll restoration, got %s", homeBody)
+	}
 
 	guideRes, err := http.Get(server.URL + "/ws-language")
 	if err != nil {
@@ -852,6 +855,9 @@ func TestManagerUIRoutes(t *testing.T) {
 	}
 	if !strings.Contains(string(appBody), ".msg-body { white-space: pre-wrap; }") {
 		t.Fatalf("expected app page body to preserve multiline message rendering, got %s", appBody)
+	}
+	if !strings.Contains(string(appBody), "history.scrollRestoration = 'manual'") || !strings.Contains(string(appBody), "window.scrollTo(0, 0)") {
+		t.Fatalf("expected app page body to disable animated/implicit scroll restoration, got %s", appBody)
 	}
 	if strings.Contains(string(appBody), "Refresh Queue") {
 		t.Fatalf("expected app page body to avoid a manual refresh queue button, got %s", appBody)

@@ -988,3 +988,10 @@
   multi-line `ws help` output and other scripted demo text render readably.
 - The predictable-model `ws help` output now includes a concrete end-to-end
   demo command list, not just the tag grammar.
+
+### 2026-03-10 update — deterministic page reload behavior
+- The manager home page and topic page now explicitly disable browser scroll
+  restoration and jump to the top immediately on reload.
+- This avoids the disorienting half-restored scroll position that could happen
+  while websocket-connected content was rehydrating after refresh.
+- No programmatic scrolling in the manager demo UI uses smooth animation now.

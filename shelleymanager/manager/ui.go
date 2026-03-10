@@ -106,6 +106,11 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
     </div>
   </main>
   <script>
+    if ('scrollRestoration' in history) {
+      history.scrollRestoration = 'manual';
+    }
+    window.scrollTo(0, 0);
+
     const namespace = document.body.dataset.namespace;
     const apiBase = '/apis/v1/namespaces/' + encodeURIComponent(namespace) + '/workspaces';
     const localToolsEl = document.getElementById('local-tools');
@@ -530,6 +535,11 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
     </div>
   </main>
   <script>
+    if ('scrollRestoration' in history) {
+      history.scrollRestoration = 'manual';
+    }
+    window.scrollTo(0, 0);
+
     const messagesEl = document.getElementById('messages');
     const statusEl = document.getElementById('status');
     const queueSummaryEl = document.getElementById('queue-summary');
