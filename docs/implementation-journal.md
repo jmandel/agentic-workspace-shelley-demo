@@ -377,6 +377,32 @@
 - `go test ./server -run 'TestWorkspaceToolMCP|TestWorkspaceToolCallsAreLogged|TestWorkspaceToolApproval' -v` in `shelley/`
 - `go test ./db ./server` in `shelley/`
 - `./test/smoke.sh` from the workspace root
+  Interfaces I’d Strengthen First
+
+  - REST resource model:
+      - Add first-class workspaceId, topicId, and probably stable toolId semantics that are distinct from names/slugs.
+      - Version the public API explicitly. Right now /api/*, /ws/*, /workspaces, and /acp/* are mixed for compatibility.
+      - Return richer metadata on public resources: protocol version, capabilities, created/updated timestamps, status/health, and maybe deprecation markers for
+        compatibility routes.
+  - Topic/WebSocket protocol:
+      - Add an envelope with eventId, topicId, turnId, timestamp, and protocolVersion.
+      - Add resumability/ordering primitives. Right now the WSS stream is not like Shelley’s SSE stream; there is no real sequence/resume contract.
+      - Make prompt lifecycle explicit: accepted, queued, started, completed, cancelled. Today queued prompt is just a system message, which is too ad hoc for a real
+        protocol.
+      - Keep content typed from the start. Right now we mostly flatten tool results and MCP structured payloads into text. Even if we ignore images for now, the wire format
+        should already support typed content parts.
+  - Tool API:
+      - Separate “tool definition”, “workspace connection/binding”, and “grant/policy”. We currently blur those together in one record.
+      - Formalize action descriptors. actions: []string is enough for the draft spec, but real model interoperability wants name, description, inputSchema, and eventually
+        output typing.
+      - Make transport config a typed union instead of opaque config. mcp plus transport-specific settings should be modeled, validated, and inspectable.
+      - Add tool status/health fields. A registered tool should expose whether Shelley can currently reach it.
+      - Approval should have a first-class approvalId, not just reuse toolCallId.
+  - Identity and policy:
+      - subject: "agent:*" and approver emails are useful placeholders, but not a durable security model. We need real principals, actor types, and auth tied to both REST
+        and websocket connections before multi-user use.
+      - scope: any is flexible, but too underspecified. If it stays open-ended, we need a convention for how scope is interpreted and audited.
+
 
 ### 2026-03-10 update — workspace tool API shape and websocket tool updates
 - Fixed the previously noted missing `tool_update` on the workspace websocket approval path.
@@ -416,3 +442,19 @@
 - This RFC captures the design distinction that came up in discussion:
   - Shelley can reasonably remain a single-workspace runtime
   - the protocol gap is the missing handoff between a manager API that creates workspaces and a runtime API that serves one workspace
+
+### 2026-03-10 update — workspace route cleanup
+- Cleaned up Shelley’s workspace route wiring so the code now treats `/ws/*` as the canonical workspace runtime REST surface.
+- Kept the following compatibility routes, but moved them into an explicit compatibility registration path instead of leaving them mixed into the main workspace route block:
+  - root wmlet-style runtime routes like `/topics` and `/health`
+  - ACP websocket aliases under `/acp/*`
+  - the single-workspace `/workspaces` manager shim used by the checked-out Bun CLI
+- Updated the workspace manager discovery response so `api` now points at the canonical `/ws` base instead of the server root.
+  - This lets the Bun CLI consume canonical `/ws/topics` through discovery without changing the CLI itself.
+- Switched Shelley’s own workspace tests and helpers to use `/ws/topics` by default.
+  - Coverage for the legacy root `/topics` path remains in a focused compatibility test instead of leaking aliases through the rest of the suite.
+
+### Validation update — workspace route cleanup checkpoint
+- `go test ./server -run 'TestWorkspace|TestEmitWorkspace' -v` in `shelley/`
+- `go test ./db ./server` in `shelley/`
+- `./test/smoke.sh` from the workspace root
