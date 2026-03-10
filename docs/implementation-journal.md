@@ -174,3 +174,14 @@
 - `go test ./server -run 'TestWorkspace|TestEmitWorkspace'` in `shelley/`
 - `go test ./db ./server` in `shelley/`
 - `./test/smoke.sh` from the workspace root
+
+### 2026-03-10 update — Phase 2 mixed-stream proof
+- Added explicit mixed-client SSE coverage in Go tests.
+- New proof point:
+  - websocket client sends a topic prompt on `/ws/topic/{name}`
+  - Shelley's native `/api/conversation/{id}/stream` SSE channel for the same conversation receives the agent response
+- This is the closest current automated check to the Phase 2 "browser + external client share a topic" behavior without adding Playwright/browser automation yet.
+
+### Validation update — mixed-stream checkpoint
+- `go test ./server -run 'TestWorkspace|TestEmitWorkspace'` in `shelley/`
+- `go test ./server` in `shelley/`
