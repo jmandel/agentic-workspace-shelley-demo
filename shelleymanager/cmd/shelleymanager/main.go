@@ -84,6 +84,7 @@ func main() {
 		DefaultNamespace: cfg.Namespace,
 		Launcher:         launcher,
 		LocalTools:       localTools,
+		StateRoot:        cfg.StateDir,
 		Logger:           logger,
 	})
 	if err != nil {
@@ -94,6 +95,11 @@ func main() {
 	if err := os.MkdirAll(cfg.StateDir, 0o755); err != nil {
 		logger.Error("failed to create state dir", "path", cfg.StateDir, "error", err)
 		os.Exit(1)
+	}
+	if recovered, err := mgr.RecoverWorkspaces(context.Background()); err != nil {
+		logger.Error("workspace recovery completed with errors", "recovered", recovered, "error", err)
+	} else if recovered > 0 {
+		logger.Info("recovered persisted workspaces", "count", recovered)
 	}
 
 	listener, err := net.Listen("tcp", cfg.Listen)

@@ -27,10 +27,21 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
     .muted { color: var(--muted); }
     .tools { display:grid; gap:10px; }
     .tool { padding:12px; border:1px solid var(--line); border-radius:12px; background:#fff; }
-    .workspace { padding:12px; border-top:1px solid var(--line); }
-    .workspace:first-child { border-top:0; padding-top:0; }
-    .topic { padding:10px 0; border-top:1px solid #eee4d6; }
-    .topic:first-child { border-top:0; }
+    .workspace-list { display:grid; gap:16px; }
+    .workspace-card { padding:16px; border:1px solid var(--line); border-radius:14px; background:#fff; display:grid; gap:14px; }
+    .workspace-head { display:flex; justify-content:space-between; gap:14px; align-items:flex-start; }
+    .workspace-meta { display:grid; gap:6px; }
+    .topics-list { display:grid; gap:12px; }
+    .topic-item { padding:12px; border:1px solid #ece4d6; border-radius:12px; background:#f7f2e8; display:grid; gap:10px; }
+    .topic-item .row { justify-content:space-between; }
+    .topic-actions { justify-content:flex-start; }
+    .workspace-create-topic { padding-top:12px; border-top:1px solid #eee4d6; display:grid; gap:10px; }
+    .action-link { display:inline-flex; align-items:center; justify-content:center; border-radius:999px; padding:10px 16px; text-decoration:none; }
+    .action-link.primary { background:var(--accent); color:var(--accent-ink); }
+    .action-link.secondary { background:#ece4d6; color:var(--ink); }
+    .toolbar { display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap; margin-top:16px; }
+    .toolbar .field { flex:1 1 280px; }
+    .inline-input { max-width:320px; }
     code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
     pre { white-space: pre-wrap; background: #f7f2e8; border-radius: 12px; padding: 12px; overflow:auto; }
     .status { min-height: 22px; color: var(--muted); }
@@ -42,6 +53,18 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
     <div class="card" style="margin-bottom:20px;">
       <h1>Shelley Manager Demo</h1>
       <p class="muted">Create a workspace from the manager-published local tool catalog, then optionally pre-register the HL7 Jira MCP tool with the real workspace APIs.</p>
+      <div class="toolbar">
+        <div class="field">
+          <label for="participant-name" style="margin-top:0;">Participant Name</label>
+          <input id="participant-name" class="inline-input" autocomplete="name" placeholder="Priya Shah">
+          <div class="muted">Used as your visible name in the topic queue and browser topic session.</div>
+        </div>
+        <div class="row">
+          <button id="save-participant" type="button" class="secondary">Use Name</button>
+          <a class="action-link secondary" href="/ws-language">WS Language Tutorial</a>
+        </div>
+      </div>
+      <p id="participant-status" class="status" style="margin:12px 0 0;"></p>
     </div>
     <div class="grid">
       <section class="card">
@@ -78,7 +101,7 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
 
       <section class="card">
         <h2>Live Workspaces</h2>
-        <div id="workspaces" class="muted">Loading…</div>
+        <div id="workspaces" class="workspace-list muted">Loading…</div>
       </section>
     </div>
   </main>
@@ -88,6 +111,9 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
     const localToolsEl = document.getElementById('local-tools');
     const workspacesEl = document.getElementById('workspaces');
     const statusEl = document.getElementById('status');
+    const participantNameEl = document.getElementById('participant-name');
+    const participantStatusEl = document.getElementById('participant-status');
+    const participantKey = 'workspace-participant-id';
 
     function escapeHTML(value) {
       return String(value == null ? '' : value)
@@ -100,6 +126,23 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
 
     function workspaceAPI(ns, name) {
       return '/apis/v1/namespaces/' + encodeURIComponent(ns) + '/workspaces/' + encodeURIComponent(name);
+    }
+
+    function randomParticipantName() {
+      return 'web-' + Math.random().toString(36).slice(2, 8);
+    }
+
+    function normalizeParticipantName(value) {
+      return String(value == null ? '' : value).trim().replace(/\s+/g, ' ').slice(0, 64);
+    }
+
+    function currentParticipantName() {
+      let value = normalizeParticipantName(localStorage.getItem(participantKey) || '');
+      if (!value) {
+        value = randomParticipantName();
+        localStorage.setItem(participantKey, value);
+      }
+      return value;
     }
 
     async function readJSON(res, label) {
@@ -145,6 +188,11 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
       }).join('');
     }
 
+    function loadParticipantName() {
+      participantNameEl.value = currentParticipantName();
+      participantStatusEl.textContent = 'Current participant: ' + participantNameEl.value;
+    }
+
     function workspaceCard(ws) {
       const wsNamespace = ws.namespace || namespace;
       const topics = Array.isArray(ws.topics) ? ws.topics : [];
@@ -156,33 +204,43 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
             const topicName = topic.name;
             const openHref = '/app/' + encodeURIComponent(wsNamespace) + '/' + encodeURIComponent(ws.name) + '/' + encodeURIComponent(topicName);
             const shelleyHref = '/shelley/' + encodeURIComponent(wsNamespace) + '/' + encodeURIComponent(ws.name) + '/' + encodeURIComponent(topicName);
-            return '<div class="topic">'
-              + '<div class="row" style="justify-content:space-between;">'
+            return '<div class="topic-item">'
+              + '<div class="row">'
               + '<strong><code>' + escapeHTML(topicName) + '</code></strong>'
               + '<button type="button" class="secondary" data-action="delete-topic" data-namespace="' + escapeHTML(wsNamespace) + '" data-workspace="' + escapeHTML(ws.name) + '" data-topic="' + escapeHTML(topicName) + '">Delete Topic</button>'
               + '</div>'
-              + '<div class="row" style="margin-top:10px;">'
-              + '<a href="' + openHref + '"><button type="button">Open Topic</button></a>'
-              + '<a href="' + shelleyHref + '"><button type="button" class="secondary">Open Shelley UI</button></a>'
+              + '<div class="row topic-actions">'
+              + '<a class="action-link primary" href="' + openHref + '">Open Topic</a>'
+              + '<a class="action-link secondary" href="' + shelleyHref + '">Open Shelley UI</a>'
               + '</div>'
               + '</div>';
           }).join('')
         : '<p class="muted">No topics yet.</p>';
-      return '<div class="workspace">'
-        + '<div class="row" style="justify-content:space-between;">'
-        + '<strong>' + escapeHTML(ws.name) + '</strong>'
-        + '<span class="muted">' + escapeHTML(ws.status) + '</span>'
-        + '</div>'
-        + '<div class="muted">Topics</div>'
-        + topicList
+      return '<section class="workspace-card">'
+        + '<div class="workspace-head">'
+        + '<div class="workspace-meta">'
+        + '<h3>' + escapeHTML(ws.name) + '</h3>'
+        + '<div class="muted">Status: ' + escapeHTML(ws.status) + '</div>'
         + '<div class="muted">Local tools: ' + localTools + '</div>'
-        + '<div class="row" style="margin-top:10px;">'
-        + '<input type="text" data-role="new-topic-name" data-namespace="' + escapeHTML(wsNamespace) + '" data-workspace="' + escapeHTML(ws.name) + '" placeholder="new-topic-name">'
-        + '<button type="button" data-action="create-topic" data-namespace="' + escapeHTML(wsNamespace) + '" data-workspace="' + escapeHTML(ws.name) + '">Create Topic</button>'
+        + '</div>'
         + '<button type="button" class="secondary" data-action="delete-workspace" data-namespace="' + escapeHTML(wsNamespace) + '" data-workspace="' + escapeHTML(ws.name) + '">Delete Workspace</button>'
         + '</div>'
+        + '<div>'
+        + '<div class="muted">Topics</div>'
+        + '<div class="topics-list">' + topicList + '</div>'
+        + '</div>'
+        + '<div class="workspace-create-topic">'
+        + '<div class="muted">Create Topic</div>'
+        + '<div class="row">'
+        + '<input type="text" data-role="new-topic-name" data-namespace="' + escapeHTML(wsNamespace) + '" data-workspace="' + escapeHTML(ws.name) + '" placeholder="new-topic-name">'
+        + '<button type="button" data-action="create-topic" data-namespace="' + escapeHTML(wsNamespace) + '" data-workspace="' + escapeHTML(ws.name) + '">Create Topic</button>'
+        + '</div>'
+        + '</div>'
+        + '<div>'
+        + '<div class="muted">CLI Join</div>'
         + '<pre>' + escapeHTML(cli) + '</pre>'
-        + '</div>';
+        + '</div>'
+        + '</section>';
     }
 
     async function loadWorkspaces() {
@@ -366,6 +424,14 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
       }
     });
 
+    document.getElementById('save-participant').addEventListener('click', () => {
+      const nextName = normalizeParticipantName(participantNameEl.value) || randomParticipantName();
+      localStorage.setItem(participantKey, nextName);
+      participantNameEl.value = nextName;
+      participantStatusEl.textContent = 'Current participant: ' + nextName;
+    });
+
+    loadParticipantName();
     loadLocalTools().then(loadWorkspaces).catch(err => {
       statusEl.textContent = err.message || String(err);
     });
@@ -394,11 +460,20 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
     button.secondary { background:#ece4d6; color:var(--ink); }
     button[disabled] { opacity:.55; cursor:default; }
     .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    .action-link { display:inline-flex; align-items:center; justify-content:center; border-radius:999px; padding:10px 16px; text-decoration:none; }
+    .action-link.primary { background:var(--accent); color:#fff; }
+    .action-link.secondary { background:#ece4d6; color:var(--ink); }
+    .composer-card { display:grid; gap:14px; }
+    .queue-panel { border-top:1px solid #ece2d3; padding-top:14px; }
     .queue-list { display:grid; gap:10px; margin-top:12px; }
-    .queue-entry { padding:12px; border:1px solid #ece2d3; border-radius:12px; background:#f7f2e8; }
+    .queue-entry { min-height:100px; padding:12px; border:1px solid #ece2d3; border-radius:12px; background:#f7f2e8; display:grid; gap:8px; }
     .queue-entry.own { border-color:#9ac7be; background:#eef7f5; }
-    .queue-text { margin-top:6px; }
+    .queue-text { margin-top:6px; white-space:pre-wrap; }
+    .queue-entry textarea { min-height:72px; margin:0; }
     .queue-header { justify-content:space-between; }
+    .queue-actions { justify-content:flex-end; }
+    input { box-sizing:border-box; padding:10px 12px; border-radius:12px; border:1px solid var(--line); font:inherit; background:#fff; }
+    .inline-input { min-width:220px; max-width:320px; }
     code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; }
     pre { white-space: pre-wrap; background:#f7f2e8; border-radius:12px; padding:12px; overflow:auto; }
   </style>
@@ -413,30 +488,38 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
         </div>
         <div class="row">
           <button id="delete-topic" type="button" class="secondary">Delete Topic</button>
-          <a href="/shelley/{{.Namespace}}/{{.Workspace}}/{{.Topic}}"><button type="button" class="secondary">Open Shelley UI</button></a>
-          <a href="/"><button type="button">Back</button></a>
+          <a class="action-link secondary" href="/ws-language">WS Language Tutorial</a>
+          <a class="action-link secondary" href="/shelley/{{.Namespace}}/{{.Workspace}}/{{.Topic}}">Open Shelley UI</a>
+          <a class="action-link primary" href="/">Back</a>
         </div>
       </div>
       <pre>WS_MANAGER={{.Origin}} bun run cli.ts connect {{.Workspace}} {{.Topic}}</pre>
     </div>
     <div class="card">
-      <div class="row" style="justify-content:space-between;">
-        <div>
-          <h2 style="margin:0 0 8px;">Prompt Queue</h2>
-          <div class="meta">Participant <code id="participant-id"></code></div>
-        </div>
-        <div class="row">
-          <button id="refresh-queue" type="button" class="secondary">Refresh Queue</button>
-          <button id="clear-my-queue" type="button" class="secondary" disabled>Clear My Queue</button>
-        </div>
-      </div>
-      <div id="queue-summary" class="meta">Loading queue…</div>
-      <div id="queue-list" class="queue-list"></div>
-    </div>
-    <div class="card">
       <div id="messages"></div>
     </div>
-    <div class="card">
+    <div class="card composer-card">
+      <div class="queue-panel">
+        <div class="row" style="justify-content:space-between;">
+          <div>
+            <h2 style="margin:0 0 8px;">Prompt Queue</h2>
+            <div class="row" style="gap:8px; align-items:flex-end;">
+              <div>
+                <div class="meta">Participant Name</div>
+                <input id="participant-name" class="inline-input" autocomplete="name" placeholder="Priya Shah">
+              </div>
+              <button id="save-participant" type="button" class="secondary">Use Name</button>
+            </div>
+            <div class="meta" style="margin-top:8px;">Currently connected as <code id="participant-id"></code></div>
+          </div>
+          <div class="row">
+            <button id="refresh-queue" type="button" class="secondary">Refresh Queue</button>
+            <button id="clear-my-queue" type="button" class="secondary" disabled>Clear My Queue</button>
+          </div>
+        </div>
+        <div id="queue-summary" class="meta">Loading queue…</div>
+        <div id="queue-list" class="queue-list"></div>
+      </div>
       <form id="chat-form">
         <textarea id="prompt" placeholder="Ask Shelley to validate the IG, search HL7 Jira, or fix the profile."></textarea>
         <div class="row" style="margin-top:12px;">
@@ -454,6 +537,8 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
     const clearMyQueueButton = document.getElementById('clear-my-queue');
     const refreshQueueButton = document.getElementById('refresh-queue');
     const participantIdEl = document.getElementById('participant-id');
+    const participantNameInput = document.getElementById('participant-name');
+    const saveParticipantButton = document.getElementById('save-participant');
     const namespace = document.body.dataset.namespace;
     const workspace = document.body.dataset.workspace;
     const topic = document.body.dataset.topic;
@@ -462,12 +547,19 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
     const wsScheme = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
     const participantKey = 'workspace-participant-id';
     const params = new URLSearchParams(window.location.search);
-    let participantId = params.get('client_id') || localStorage.getItem(participantKey);
+    function randomParticipantName() {
+      return 'web-' + Math.random().toString(36).slice(2, 8);
+    }
+    function normalizeParticipantName(value) {
+      return String(value == null ? '' : value).trim().replace(/\s+/g, ' ').slice(0, 64);
+    }
+    let participantId = normalizeParticipantName(params.get('client_id') || localStorage.getItem(participantKey) || '');
     if (!participantId) {
-      participantId = 'web-' + Math.random().toString(36).slice(2, 10);
+      participantId = randomParticipantName();
       localStorage.setItem(participantKey, participantId);
     }
     participantIdEl.textContent = participantId;
+    participantNameInput.value = participantId;
     const wsURL = wsScheme + window.location.host + wsPath + '?client_id=' + encodeURIComponent(participantId);
     const conn = new WebSocket(wsURL);
     let wsOpened = false;
@@ -521,10 +613,19 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
       };
     }
 
+    function isOwnQueueEntry(entry) {
+      return !!(entry && entry.submittedBy && entry.submittedBy.id === participantId);
+    }
+
+    function applyQueueSnapshot(snapshot) {
+      queueState = normalizeQueueSnapshot(snapshot);
+      renderQueue();
+    }
+
     function renderQueue() {
       queueListEl.replaceChildren();
 
-      const ownEntries = queueState.entries.filter((entry) => entry.submittedBy && entry.submittedBy.id === participantId);
+      const ownEntries = queueState.entries.filter((entry) => isOwnQueueEntry(entry));
       clearMyQueueButton.disabled = ownEntries.length === 0;
 
       const queuedCount = queueState.entries.length;
@@ -547,7 +648,7 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
       for (const entry of queueState.entries) {
         const item = document.createElement('div');
         item.className = 'queue-entry';
-        if (entry.submittedBy && entry.submittedBy.id === participantId) {
+        if (isOwnQueueEntry(entry)) {
           item.classList.add('own');
         }
 
@@ -564,23 +665,71 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
         pieces.push('by ' + owner);
         label.textContent = pieces.join(' · ');
         header.appendChild(label);
-
-        if (entry.submittedBy && entry.submittedBy.id === participantId) {
-          const cancelButton = document.createElement('button');
-          cancelButton.type = 'button';
-          cancelButton.className = 'secondary';
-          cancelButton.dataset.promptId = entry.promptId || '';
-          cancelButton.dataset.action = 'cancel-queued';
-          cancelButton.textContent = 'Cancel';
-          header.appendChild(cancelButton);
-        }
-
         item.appendChild(header);
 
-        const body = document.createElement('div');
-        body.className = 'queue-text';
-        body.textContent = entry.text || '';
-        item.appendChild(body);
+        const editor = document.createElement('textarea');
+        editor.dataset.role = 'queue-text';
+        editor.dataset.promptId = entry.promptId || '';
+        editor.defaultValue = entry.text || '';
+        editor.value = entry.text || '';
+        item.appendChild(editor);
+
+        const actions = document.createElement('div');
+        actions.className = 'row queue-actions';
+
+        const saveButton = document.createElement('button');
+        saveButton.type = 'button';
+        saveButton.className = 'secondary';
+        saveButton.dataset.promptId = entry.promptId || '';
+        saveButton.dataset.action = 'save-queued';
+        saveButton.textContent = 'Save';
+        actions.appendChild(saveButton);
+
+        const topButton = document.createElement('button');
+        topButton.type = 'button';
+        topButton.className = 'secondary';
+        topButton.dataset.promptId = entry.promptId || '';
+        topButton.dataset.action = 'move-top';
+        topButton.textContent = 'Top';
+        topButton.disabled = !entry.position || entry.position <= 1;
+        actions.appendChild(topButton);
+
+        const upButton = document.createElement('button');
+        upButton.type = 'button';
+        upButton.className = 'secondary';
+        upButton.dataset.promptId = entry.promptId || '';
+        upButton.dataset.action = 'move-up';
+        upButton.textContent = 'Up';
+        upButton.disabled = !entry.position || entry.position <= 1;
+        actions.appendChild(upButton);
+
+        const downButton = document.createElement('button');
+        downButton.type = 'button';
+        downButton.className = 'secondary';
+        downButton.dataset.promptId = entry.promptId || '';
+        downButton.dataset.action = 'move-down';
+        downButton.textContent = 'Down';
+        downButton.disabled = !entry.position || entry.position >= queuedCount;
+        actions.appendChild(downButton);
+
+        const bottomButton = document.createElement('button');
+        bottomButton.type = 'button';
+        bottomButton.className = 'secondary';
+        bottomButton.dataset.promptId = entry.promptId || '';
+        bottomButton.dataset.action = 'move-bottom';
+        bottomButton.textContent = 'Bottom';
+        bottomButton.disabled = !entry.position || entry.position >= queuedCount;
+        actions.appendChild(bottomButton);
+
+        const deleteButton = document.createElement('button');
+        deleteButton.type = 'button';
+        deleteButton.className = 'secondary';
+        deleteButton.dataset.promptId = entry.promptId || '';
+        deleteButton.dataset.action = 'cancel-queued';
+        deleteButton.textContent = 'Delete';
+        actions.appendChild(deleteButton);
+
+        item.appendChild(actions);
 
         queueListEl.appendChild(item);
       }
@@ -590,8 +739,7 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
       const res = await fetch(queueApiBase + '/queue', {
         headers: requestHeaders(),
       });
-      queueState = normalizeQueueSnapshot(await readJSONResponse(res, 'load queue'));
-      renderQueue();
+      applyQueueSnapshot(await readJSONResponse(res, 'load queue'));
     }
 
     function scheduleQueueRefresh() {
@@ -616,6 +764,30 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
         throw new Error('cancel queued prompt: ' + res.status + ' ' + ((await res.text()).trim() || 'request failed'));
       }
       scheduleQueueRefresh();
+    }
+
+    async function updateQueuedPrompt(promptId, text) {
+      if (!promptId) return;
+      const nextText = (text || '').trim();
+      if (!nextText) {
+        throw new Error('queued prompt text is required');
+      }
+      const res = await fetch(queueApiBase + '/queue/' + encodeURIComponent(promptId), {
+        method: 'PATCH',
+        headers: requestHeaders({'Content-Type': 'application/json'}),
+        body: JSON.stringify({text: nextText}),
+      });
+      applyQueueSnapshot(await readJSONResponse(res, 'update queued prompt'));
+    }
+
+    async function moveQueuedPrompt(promptId, direction) {
+      if (!promptId) return;
+      const res = await fetch(queueApiBase + '/queue/' + encodeURIComponent(promptId) + '/move', {
+        method: 'POST',
+        headers: requestHeaders({'Content-Type': 'application/json'}),
+        body: JSON.stringify({direction}),
+      });
+      applyQueueSnapshot(await readJSONResponse(res, 'move queued prompt'));
     }
 
     async function clearMyQueue() {
@@ -660,19 +832,20 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
           scheduleQueueRefresh();
           break;
         case 'queue_snapshot':
-          queueState = normalizeQueueSnapshot(msg);
-          renderQueue();
+          applyQueueSnapshot(msg);
+          break;
+        case 'queue_entry_updated':
+        case 'queue_entry_moved':
+          scheduleQueueRefresh();
           break;
         case 'queue_entry_removed':
-          appendMessage('system', 'Queue', 'removed ' + (msg.promptId || '') + (msg.reason ? ' (' + msg.reason + ')' : ''));
           scheduleQueueRefresh();
           break;
         case 'queue_cleared':
-          appendMessage('system', 'Queue', 'cleared ' + ((msg.removed || []).join(', ') || 'no prompts'));
           scheduleQueueRefresh();
           break;
         case 'user':
-          appendMessage('system', 'User', msg.data || '');
+          appendMessage('system', (msg.submittedBy && msg.submittedBy.id ? msg.submittedBy.id : 'User'), msg.data || '');
           break;
         case 'text':
           appendMessage('', 'Assistant', msg.data || '');
@@ -708,8 +881,16 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
         return;
       }
       promptCounter += 1;
-      conn.send(JSON.stringify({type: 'prompt', promptId: 'p_' + participantId + '_' + promptCounter, data: text}));
+      conn.send(JSON.stringify({type: 'prompt', promptId: 'p_web_' + Date.now() + '_' + promptCounter, data: text}));
       input.value = '';
+    });
+
+    saveParticipantButton.addEventListener('click', () => {
+      const nextName = normalizeParticipantName(participantNameInput.value) || randomParticipantName();
+      localStorage.setItem(participantKey, nextName);
+      const nextURL = new URL(window.location.href);
+      nextURL.searchParams.set('client_id', nextName);
+      window.location.href = nextURL.toString();
     });
 
     refreshQueueButton.addEventListener('click', async () => {
@@ -729,10 +910,36 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
     });
 
     queueListEl.addEventListener('click', async (event) => {
-      const button = event.target.closest('button[data-action="cancel-queued"]');
+      const button = event.target.closest('button[data-action]');
       if (!button) return;
       try {
-        await cancelQueuedPrompt(button.dataset.promptId || '');
+        const promptId = button.dataset.promptId || '';
+        const action = button.dataset.action || '';
+        if (action === 'cancel-queued') {
+          await cancelQueuedPrompt(promptId);
+          return;
+        }
+        if (action === 'move-up') {
+          await moveQueuedPrompt(promptId, 'up');
+          return;
+        }
+        if (action === 'move-top') {
+          await moveQueuedPrompt(promptId, 'top');
+          return;
+        }
+        if (action === 'move-down') {
+          await moveQueuedPrompt(promptId, 'down');
+          return;
+        }
+        if (action === 'move-bottom') {
+          await moveQueuedPrompt(promptId, 'bottom');
+          return;
+        }
+        if (action === 'save-queued') {
+          const item = button.closest('.queue-entry');
+          const editor = item ? item.querySelector('textarea[data-role="queue-text"]') : null;
+          await updateQueuedPrompt(promptId, editor ? editor.value : '');
+        }
       } catch (err) {
         appendMessage('error', 'Queue', err.message || String(err));
       }
@@ -750,6 +957,91 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
       window.location.href = '/';
     });
   </script>
+</body>
+</html>`))
+
+var wsLanguageTemplate = template.Must(template.New("ws-language").Parse(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WS Language Tutorial</title>
+  <style>
+    :root { color-scheme: light; --bg:#f4f0e8; --ink:#1f2430; --muted:#6b7280; --card:#fffdf8; --line:#d7cec0; --accent:#0f766e; --accent-ink:#ffffff; }
+    body { margin:0; font:16px/1.5 Georgia, serif; background: radial-gradient(circle at top left, #f8f4eb, #efe6d8 60%, #e7ddcf); color:var(--ink); }
+    main { max-width: 980px; margin: 0 auto; padding: 28px 20px 56px; display:grid; gap:18px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 18px; box-shadow: 0 12px 40px rgba(31,36,48,.08); }
+    h1,h2,h3 { margin:0 0 10px; font-family: "Iowan Old Style", Georgia, serif; }
+    .grid { display:grid; gap:16px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+    .muted { color: var(--muted); }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; }
+    pre { white-space: pre-wrap; background: #f7f2e8; border-radius: 12px; padding: 12px; overflow:auto; }
+    ul { margin: 0; padding-left: 18px; }
+    .action-link { display:inline-flex; align-items:center; justify-content:center; border-radius:999px; padding:10px 16px; text-decoration:none; background:#ece4d6; color:var(--ink); }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; gap:12px; align-items:flex-start; flex-wrap:wrap;">
+        <div>
+          <h1>WS Language Tutorial</h1>
+          <p class="muted">Use <code>ws ...</code> prompts with the predictable model to script live demo behavior on the fly. Tags can appear in any order; only one primary action is allowed per prompt.</p>
+        </div>
+        <a class="action-link" href="/">Back To Shelley Manager</a>
+      </div>
+    </div>
+
+    <div class="grid">
+      <section class="card">
+        <h2>Primary Actions</h2>
+        <ul>
+          <li><code>text</code> or <code>echo</code>: return assistant text immediately.</li>
+          <li><code>bash</code>: call Shelley’s built-in <code>bash</code> tool with your command.</li>
+          <li><code>validator</code>: run the local <code>fhir-validator</code> wrapper through <code>bash</code>.</li>
+          <li><code>publisher</code>: run the local <code>ig-publisher</code> wrapper through <code>bash</code>.</li>
+          <li><code>jira</code>: call the first-class <code>hl7-jira</code> MCP tool as <code>jira.search</code>.</li>
+          <li><code>tool</code> + <code>action</code> + optional <code>input</code>: call any registered workspace tool explicitly.</li>
+        </ul>
+      </section>
+
+      <section class="card">
+        <h2>Timing Tags</h2>
+        <ul>
+          <li><code>pause2</code> or <code>pause 2</code>: delay before the assistant responds or starts a tool.</li>
+          <li><code>toolpause3</code> or <code>toolpause 3</code>: keep the tool busy for 3 seconds. This is the easiest way to demonstrate queueing.</li>
+          <li><code>afterpause1</code>: delay the follow-up assistant text after a tool result arrives.</li>
+          <li><code>aftertext "..."</code>: customize what the predictable model says after the tool call finishes.</li>
+        </ul>
+      </section>
+    </div>
+
+    <section class="card">
+      <h2>Demo-Ready Examples</h2>
+      <pre>ws text "Thanks. Let me summarize the validator findings."</pre>
+      <pre>ws pause2 validator "input/fsh/BloodPressurePanel.fsh" toolpause3 aftertext "The validator is pointing at missing slicing metadata on Observation.component."</pre>
+      <pre>ws jira "Observation.component slicing validator failure" pause1</pre>
+      <pre>ws tool hl7-jira action jira.search input '{"query":"validator warning blood pressure slicing"}' aftertext "I found two relevant HL7 Jira threads."</pre>
+      <pre>ws bash "sed -n '1,160p' input/fsh/BloodPressurePanel.fsh"</pre>
+    </section>
+
+    <section class="card">
+      <h2>Queueing Trick</h2>
+      <p>To show queueing live in the demo, make the current turn visibly slow at the exact point you want:</p>
+      <pre>ws validator "input/fsh/BloodPressurePanel.fsh" toolpause5 aftertext "Validator run finished."</pre>
+      <p class="muted">While that five-second validator step is running, submit another prompt from the browser or CLI. The second prompt will queue, and the queue panel will let you edit, reorder, move to top/bottom, or delete it before it runs.</p>
+    </section>
+
+    <section class="card">
+      <h2>Rules Of Thumb</h2>
+      <ul>
+        <li>Wrap multi-word values in single or double quotes.</li>
+        <li><code>input</code> must be valid JSON.</li>
+        <li>Use only one primary action in a single prompt.</li>
+        <li><code>ws help</code> in a predictable-model chat returns a compact version of this tutorial.</li>
+      </ul>
+    </section>
+  </main>
 </body>
 </html>`))
 
@@ -774,6 +1066,15 @@ func (m *Manager) handleHome(w http.ResponseWriter, r *http.Request) {
 	_ = homeTemplate.Execute(w, homeTemplateData{
 		Namespace: m.defaultNamespace,
 	})
+}
+
+func (m *Manager) handleWSLanguage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = wsLanguageTemplate.Execute(w, nil)
 }
 
 func (m *Manager) handleDemoJiraScript(w http.ResponseWriter, r *http.Request) {

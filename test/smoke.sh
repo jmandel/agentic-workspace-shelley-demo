@@ -173,14 +173,27 @@ require_output "$DETAIL_JSON" '"localTools":[{"name":"fhir-validator"' "GET work
 
 HOME_HTML="$(curl -sf "http://localhost:$PORT/")"
 require_output "$HOME_HTML" "Create Workspace" "GET / serves the manager web entry point"
+require_output "$HOME_HTML" "Participant Name" "GET / exposes participant naming controls"
+require_output "$HOME_HTML" "/ws-language" "GET / links to the ws language tutorial"
+
+WS_LANGUAGE_HTML="$(curl -sf "http://localhost:$PORT/ws-language")"
+require_output "$WS_LANGUAGE_HTML" "WS Language Tutorial" "GET /ws-language serves the predictable-model tutorial"
+require_output "$WS_LANGUAGE_HTML" "Queueing Trick" "GET /ws-language explains how to demonstrate queueing"
 
 APP_HTML="$(curl -sf "http://localhost:$PORT/app/$MANAGER_NAMESPACE/$WORKSPACE_NAME/$TOPIC_NAME")"
 require_output "$APP_HTML" "Send Prompt" "GET /app/{ns}/{workspace}/{topic} serves the topic web UI"
+require_output "$APP_HTML" "Use Name" "GET /app/{ns}/{workspace}/{topic} exposes participant naming controls"
 
 if command -v chromium >/dev/null 2>&1; then
+  HOME_DOM="$(chromium --headless --disable-gpu --virtual-time-budget=4000 --dump-dom "http://localhost:$PORT/" 2>/dev/null)"
+  require_output "$HOME_DOM" "Delete Workspace" "headless Chromium renders a per-workspace card with workspace deletion"
+  require_output "$HOME_DOM" "Create Topic" "headless Chromium renders a dedicated topic-creation control"
+  require_output "$HOME_DOM" "Open Shelley UI" "headless Chromium renders topic-level Shelley UI links"
+  require_output "$HOME_DOM" "Current participant:" "headless Chromium renders the saved participant name"
   APP_DOM="$(chromium --headless --disable-gpu --virtual-time-budget=4000 --dump-dom "http://localhost:$PORT/app/$MANAGER_NAMESPACE/$WORKSPACE_NAME/$TOPIC_NAME" 2>/dev/null)"
   require_output "$APP_DOM" '<span id="status" class="meta">Connected</span>' "headless Chromium connects to the topic web UI websocket"
   require_output "$APP_DOM" '<div class="meta">Connected</div>' "topic web UI renders the initial connected event in a browser"
+  require_output "$APP_DOM" "Participant Name" "topic web UI renders participant naming controls in the browser"
 fi
 
 PROFILE_CONTENT="$(cat "$WORKSPACE_ROOT/input/fsh/BloodPressurePanel.fsh")"
@@ -303,13 +316,14 @@ QUEUE_WS_OUTPUT="$(
     const ws = new WebSocket("ws://127.0.0.1:'"$PORT"'/acp/'"$MANAGER_NAMESPACE"'/'"$WORKSPACE_NAME"'/topics/'"$TOPIC_NAME"'?client_id=queue-smoke");
     const seen = [];
     ws.onopen = () => {
-      ws.send(JSON.stringify({ type: "prompt", promptId: "p-smoke-1", data: "bash: sleep 3; printf \"smoke queue first\\n\"" }));
-      ws.send(JSON.stringify({ type: "prompt", promptId: "p-smoke-2", data: "echo: smoke queue second" }));
+      ws.send(JSON.stringify({ type: "prompt", promptId: "p-smoke-1", data: "ws validator \"input/fsh/BloodPressurePanel.fsh\" toolpause3 aftertext \"validator finished\"" }));
+      ws.send(JSON.stringify({ type: "prompt", promptId: "p-smoke-2", data: "ws text \"smoke queue second\"" }));
+      ws.send(JSON.stringify({ type: "prompt", promptId: "p-smoke-3", data: "ws text \"smoke queue third\"" }));
     };
     ws.onmessage = (event) => {
       const msg = JSON.parse(event.data);
       seen.push(msg);
-      if (msg.type === "prompt_status" && msg.promptId === "p-smoke-2" && msg.status === "queued") {
+      if (msg.type === "prompt_status" && msg.promptId === "p-smoke-3" && msg.status === "queued") {
         console.log(JSON.stringify(seen));
         process.exit(0);
       }
@@ -321,11 +335,13 @@ QUEUE_WS_OUTPUT="$(
   '
 )"
 require_output "$QUEUE_WS_OUTPUT" '"promptId":"p-smoke-2"' "topic websocket emits a prompt id for the queued prompt"
-require_output "$QUEUE_WS_OUTPUT" '"status":"queued"' "second prompt is explicitly queued while the first turn is active"
+require_output "$QUEUE_WS_OUTPUT" '"promptId":"p-smoke-3"' "topic websocket emits a prompt id for the third queued prompt"
+require_output "$QUEUE_WS_OUTPUT" '"status":"queued"' "later prompts are explicitly queued while the first turn is active"
 
 QUEUE_JSON="$(curl -sf -H 'X-Workspace-Client-ID: queue-smoke' "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/topics/$TOPIC_NAME/queue")"
 require_output "$QUEUE_JSON" '"activePromptId":"p-smoke-1"' "GET /topics/{topic}/queue shows the active prompt"
 require_output "$QUEUE_JSON" '"promptId":"p-smoke-2"' "GET /topics/{topic}/queue lists the queued prompt"
+require_output "$QUEUE_JSON" '"promptId":"p-smoke-3"' "GET /topics/{topic}/queue lists all queued prompts"
 
 CLI_QUEUE_OUTPUT="$(
   cd "$AW_DIR"
@@ -333,13 +349,37 @@ CLI_QUEUE_OUTPUT="$(
 )"
 require_output "$CLI_QUEUE_OUTPUT" "active=p-smoke-1" "cli.ts queue reports the active prompt"
 require_output "$CLI_QUEUE_OUTPUT" "p-smoke-2 queued" "cli.ts queue reports the queued prompt"
+require_output "$CLI_QUEUE_OUTPUT" "p-smoke-3 queued" "cli.ts queue reports later queued prompts"
+
+QUEUE_PATCH_JSON="$(curl -sf -X PATCH -H 'X-Workspace-Client-ID: queue-smoke' -H 'Content-Type: application/json' \
+  "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/topics/$TOPIC_NAME/queue/p-smoke-3" \
+  -d '{"text":"ws text \"smoke queue third edited\""}')"
+require_output "$QUEUE_PATCH_JSON" 'smoke queue third edited' "PATCH /queue/{promptId} updates queued prompt text"
+
+QUEUE_MOVE_JSON="$(curl -sf -X POST -H 'X-Workspace-Client-ID: queue-smoke' -H 'Content-Type: application/json' \
+  "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/topics/$TOPIC_NAME/queue/p-smoke-3/move" \
+  -d '{"direction":"top"}')"
+require_output "$QUEUE_MOVE_JSON" '"promptId":"p-smoke-3"' "POST /queue/{promptId}/move returns the updated queue snapshot"
+require_output "$QUEUE_MOVE_JSON" '"position":1' "moving a queued prompt to the top changes its queue position"
+
+QUEUE_MOVE_BOTTOM_JSON="$(curl -sf -X POST -H 'X-Workspace-Client-ID: queue-smoke' -H 'Content-Type: application/json' \
+  "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/topics/$TOPIC_NAME/queue/p-smoke-3/move" \
+  -d '{"direction":"bottom"}')"
+require_output "$QUEUE_MOVE_BOTTOM_JSON" '"promptId":"p-smoke-3"' "POST /queue/{promptId}/move also supports bottom"
+require_output "$QUEUE_MOVE_BOTTOM_JSON" '"position":2' "moving a queued prompt to the bottom updates its queue position"
 
 if command -v chromium >/dev/null 2>&1; then
   QUEUE_APP_DOM="$(chromium --headless --disable-gpu --virtual-time-budget=1000 --dump-dom "http://localhost:$PORT/app/$MANAGER_NAMESPACE/$WORKSPACE_NAME/$TOPIC_NAME?client_id=queue-smoke" 2>/dev/null)"
   require_output "$QUEUE_APP_DOM" "Prompt Queue" "topic web UI renders a dedicated queue panel"
   require_output "$QUEUE_APP_DOM" "Active prompt p-smoke-1" "topic web UI shows the active prompt in the queue panel"
   require_output "$QUEUE_APP_DOM" "p-smoke-2" "topic web UI renders the queued prompt"
-  require_output "$QUEUE_APP_DOM" "Cancel" "topic web UI exposes queued prompt cancellation controls for the current participant"
+  require_output "$QUEUE_APP_DOM" "smoke queue third edited" "topic web UI renders edited queued prompt text"
+  require_output "$QUEUE_APP_DOM" "Save" "topic web UI exposes queued prompt save controls"
+  require_output "$QUEUE_APP_DOM" "Top" "topic web UI exposes queued prompt move-to-top controls"
+  require_output "$QUEUE_APP_DOM" "Up" "topic web UI exposes queued prompt reorder controls"
+  require_output "$QUEUE_APP_DOM" "Down" "topic web UI exposes queued prompt downward reorder controls"
+  require_output "$QUEUE_APP_DOM" "Bottom" "topic web UI exposes queued prompt move-to-bottom controls"
+  require_output "$QUEUE_APP_DOM" "Delete" "topic web UI exposes queued prompt deletion controls"
 fi
 
 curl -sf -X DELETE -H 'X-Workspace-Client-ID: queue-smoke' \

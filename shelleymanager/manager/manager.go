@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"path"
 	"slices"
 	"strings"
@@ -22,6 +23,7 @@ type Config struct {
 	DefaultNamespace string
 	Launcher         Launcher
 	LocalTools       []LocalTool
+	StateRoot        string
 	Logger           *slog.Logger
 }
 
@@ -29,6 +31,7 @@ type Manager struct {
 	defaultNamespace string
 	launcher         Launcher
 	localTools       []LocalTool
+	stateRoot        string
 	logger           *slog.Logger
 
 	mu         sync.RWMutex
@@ -43,6 +46,7 @@ type workspaceKey struct {
 type Workspace struct {
 	Namespace  string
 	Name       string
+	StateDir   string
 	CreatedAt  time.Time
 	Template   string
 	LocalTools []LocalTool
@@ -129,6 +133,7 @@ func New(cfg Config) (*Manager, error) {
 		defaultNamespace: namespace,
 		launcher:         cfg.Launcher,
 		localTools:       append([]LocalTool(nil), cfg.LocalTools...),
+		stateRoot:        strings.TrimSpace(cfg.StateRoot),
 		logger:           logger,
 		workspaces:       map[workspaceKey]*Workspace{},
 	}, nil
@@ -138,6 +143,8 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/":
 		m.handleHome(w, r)
+	case r.URL.Path == "/ws-language":
+		m.handleWSLanguage(w, r)
 	case strings.HasPrefix(r.URL.Path, "/app/"):
 		m.handleApp(w, r)
 	case strings.HasPrefix(r.URL.Path, "/shelley/"):
@@ -392,6 +399,16 @@ func (m *Manager) createWorkspace(w http.ResponseWriter, r *http.Request, namesp
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	hasState, err := stateDirHasEntries(spec.StateDir)
+	if err != nil {
+		m.logger.Error("failed to inspect workspace state", "namespace", namespace, "name", req.Name, "path", spec.StateDir, "error", err)
+		http.Error(w, "failed to inspect workspace state", http.StatusInternalServerError)
+		return
+	}
+	if hasState {
+		http.Error(w, "workspace state already exists", http.StatusConflict)
+		return
+	}
 	spec.LocalTools = append([]LocalTool(nil), localTools...)
 	if err := seedWorkspaceTemplate(spec.WorkspaceDir, req.Template); err != nil {
 		m.logger.Error("failed to seed workspace template", "namespace", namespace, "name", req.Name, "template", req.Template, "error", err)
@@ -412,6 +429,7 @@ func (m *Manager) createWorkspace(w http.ResponseWriter, r *http.Request, namesp
 	ws := &Workspace{
 		Namespace:  namespace,
 		Name:       req.Name,
+		StateDir:   spec.StateDir,
 		CreatedAt:  time.Now().UTC(),
 		Template:   strings.TrimSpace(req.Template),
 		LocalTools: append([]LocalTool(nil), localTools...),
@@ -430,6 +448,9 @@ func (m *Manager) createWorkspace(w http.ResponseWriter, r *http.Request, namesp
 	m.mu.Lock()
 	m.workspaces[key] = ws
 	m.mu.Unlock()
+	if err := m.persistWorkspaceMetadata(ws); err != nil {
+		m.logger.Error("failed to persist workspace metadata", "namespace", namespace, "name", req.Name, "error", err)
+	}
 
 	if compat {
 		writeJSON(w, http.StatusCreated, m.compatDetail(r, ws, topics))
@@ -454,6 +475,13 @@ func (m *Manager) deleteWorkspace(w http.ResponseWriter, r *http.Request, namesp
 		if err := ws.Runtime.Stop(r.Context()); err != nil {
 			m.logger.Error("failed to stop workspace runtime", "namespace", namespace, "name", name, "error", err)
 			http.Error(w, "failed to stop workspace runtime", http.StatusBadGateway)
+			return
+		}
+	}
+	if ws.StateDir != "" {
+		if err := os.RemoveAll(ws.StateDir); err != nil {
+			m.logger.Error("failed to remove workspace state", "namespace", namespace, "name", name, "path", ws.StateDir, "error", err)
+			http.Error(w, "failed to remove workspace state", http.StatusInternalServerError)
 			return
 		}
 	}

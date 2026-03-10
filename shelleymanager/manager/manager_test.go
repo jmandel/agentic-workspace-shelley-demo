@@ -30,7 +30,7 @@ func (f *fakeLauncher) Name() string { return "fake" }
 func (f *fakeLauncher) WorkspacePaths(namespace, name string) (LaunchSpec, error) {
 	base := "/tmp/" + namespace + "/" + name
 	if f.baseDir != "" {
-		base = f.baseDir
+		base = filepath.Join(f.baseDir, namespace, name)
 	}
 	return LaunchSpec{
 		Namespace:    namespace,
@@ -45,16 +45,20 @@ func (f *fakeLauncher) Launch(_ context.Context, spec LaunchSpec) (*Runtime, err
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.launches = append(f.launches, spec)
-	if f.runtime != nil && f.runtime.Stop != nil {
+	if f.runtime == nil {
+		return nil, nil
+	}
+	cloned := *f.runtime
+	if f.runtime.Stop != nil {
 		origStop := f.runtime.Stop
-		f.runtime.Stop = func(ctx context.Context) error {
+		cloned.Stop = func(ctx context.Context) error {
 			f.mu.Lock()
 			f.stops++
 			f.mu.Unlock()
 			return origStop(ctx)
 		}
 	}
-	return f.runtime, nil
+	return &cloned, nil
 }
 
 func TestManagerCreateAndProxyRoutes(t *testing.T) {
@@ -90,6 +94,7 @@ func TestManagerCreateAndProxyRoutes(t *testing.T) {
 	}
 
 	launcher := &fakeLauncher{
+		baseDir: t.TempDir(),
 		runtime: &Runtime{
 			Name:    "demo",
 			APIBase: runtimeURL,
@@ -187,6 +192,7 @@ func TestManagerCompatibilityRoutes(t *testing.T) {
 	runtimeURL, _ := url.Parse(runtime.URL)
 
 	launcher := &fakeLauncher{
+		baseDir: t.TempDir(),
 		runtime: &Runtime{
 			Name:    "demo",
 			APIBase: runtimeURL,
@@ -247,6 +253,7 @@ func TestManagerACPProxy(t *testing.T) {
 
 	runtimeURL, _ := url.Parse(runtime.URL)
 	launcher := &fakeLauncher{
+		baseDir: t.TempDir(),
 		runtime: &Runtime{
 			Name:    "demo",
 			APIBase: runtimeURL,
@@ -311,6 +318,7 @@ func TestManagerACPProxyRewritesBrowserOrigin(t *testing.T) {
 
 	runtimeURL, _ := url.Parse(runtime.URL)
 	launcher := &fakeLauncher{
+		baseDir: t.TempDir(),
 		runtime: &Runtime{
 			Name:    "demo",
 			APIBase: runtimeURL,
@@ -367,6 +375,7 @@ func TestManagerDeleteStopsRuntime(t *testing.T) {
 
 	stopCount := 0
 	launcher := &fakeLauncher{
+		baseDir: t.TempDir(),
 		runtime: &Runtime{
 			Name:    "demo",
 			APIBase: runtimeURL,
@@ -402,6 +411,108 @@ func TestManagerDeleteStopsRuntime(t *testing.T) {
 	}
 	if stopCount != 1 {
 		t.Fatalf("expected one runtime stop, got %d", stopCount)
+	}
+}
+
+func TestManagerDeleteRemovesWorkspaceState(t *testing.T) {
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ws/health" {
+			io.WriteString(w, `{"status":"ok"}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer runtime.Close()
+	runtimeURL, _ := url.Parse(runtime.URL)
+
+	stateRoot := t.TempDir()
+	launcher := &fakeLauncher{
+		baseDir: stateRoot,
+		runtime: &Runtime{
+			Name:    "demo",
+			APIBase: runtimeURL,
+			Mode:    "fake",
+			Health:  func(context.Context) error { return nil },
+			Stop:    func(context.Context) error { return nil },
+		},
+	}
+	mgr, err := New(Config{DefaultNamespace: "acme", Launcher: launcher, StateRoot: stateRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(mgr)
+	defer server.Close()
+
+	createRes, err := http.Post(server.URL+"/workspaces", "application/json", strings.NewReader(`{"name":"demo"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	createRes.Body.Close()
+
+	workspaceDir := filepath.Join(stateRoot, "acme", "demo")
+	if _, err := os.Stat(workspaceDir); err != nil {
+		t.Fatalf("expected workspace state dir to exist before delete: %v", err)
+	}
+
+	req, _ := http.NewRequest(http.MethodDelete, server.URL+"/workspaces/demo", nil)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("delete status = %d", res.StatusCode)
+	}
+	if _, err := os.Stat(workspaceDir); !os.IsNotExist(err) {
+		t.Fatalf("expected workspace state dir to be removed, stat err = %v", err)
+	}
+}
+
+func TestManagerShutdownStopsTrackedRuntimes(t *testing.T) {
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ws/health" {
+			io.WriteString(w, `{"status":"ok"}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer runtime.Close()
+	runtimeURL, _ := url.Parse(runtime.URL)
+
+	stopCount := 0
+	launcher := &fakeLauncher{
+		baseDir: t.TempDir(),
+		runtime: &Runtime{
+			Name:    "demo",
+			APIBase: runtimeURL,
+			Mode:    "fake",
+			Health:  func(context.Context) error { return nil },
+			Stop: func(context.Context) error {
+				stopCount++
+				return nil
+			},
+		},
+	}
+	mgr, err := New(Config{DefaultNamespace: "acme", Launcher: launcher})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(mgr)
+	defer server.Close()
+
+	for _, name := range []string{"demo-a", "demo-b"} {
+		createRes, err := http.Post(server.URL+"/workspaces", "application/json", strings.NewReader(`{"name":"`+name+`"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		createRes.Body.Close()
+	}
+
+	if err := mgr.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if stopCount != 2 {
+		t.Fatalf("expected two runtime stops, got %d", stopCount)
 	}
 }
 
@@ -527,6 +638,118 @@ func TestManagerLocalToolsCatalogAndWorkspaceSelection(t *testing.T) {
 	}
 }
 
+func TestManagerRecoverPersistedWorkspaces(t *testing.T) {
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/ws/health":
+			io.WriteString(w, `{"status":"ok"}`)
+		case r.URL.Path == "/ws/topics" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{"name":"bp-panel-validator"}`)
+		case r.URL.Path == "/ws/topics":
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `[{"name":"bp-panel-validator","clients":0,"busy":false,"createdAt":"2026-03-10T00:00:00Z"}]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer runtime.Close()
+	runtimeURL, _ := url.Parse(runtime.URL)
+
+	stateRoot := t.TempDir()
+	localTools := []LocalTool{{
+		Name:         "fhir-validator",
+		Description:  "FHIR Validator CLI",
+		Guidance:     "Run through bash as `fhir-validator`.",
+		Requirements: []string{"java"},
+		HostRoot:     t.TempDir(),
+		Commands:     []LocalToolCommand{{Name: "fhir-validator", RelativePath: "bin/fhir-validator"}},
+	}}
+
+	launcherA := &fakeLauncher{
+		baseDir: stateRoot,
+		runtime: &Runtime{
+			Name:    "bp-ig-fix",
+			APIBase: runtimeURL,
+			Mode:    "fake",
+			Health:  func(context.Context) error { return nil },
+			Stop:    func(context.Context) error { return nil },
+		},
+	}
+	mgrA, err := New(Config{DefaultNamespace: "acme", Launcher: launcherA, LocalTools: localTools, StateRoot: stateRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverA := httptest.NewServer(mgrA)
+
+	createBody := `{"name":"bp-ig-fix","template":"acme-rpm-ig","topics":[{"name":"bp-panel-validator"}],"runtime":{"localTools":["fhir-validator"]}}`
+	createRes, err := http.Post(serverA.URL+"/apis/v1/namespaces/acme/workspaces", "application/json", strings.NewReader(createBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	createRes.Body.Close()
+	if createRes.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d", createRes.StatusCode)
+	}
+	if err := mgrA.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	serverA.Close()
+
+	launcherB := &fakeLauncher{
+		baseDir: stateRoot,
+		runtime: &Runtime{
+			Name:    "bp-ig-fix",
+			APIBase: runtimeURL,
+			Mode:    "fake",
+			Health:  func(context.Context) error { return nil },
+			Stop:    func(context.Context) error { return nil },
+		},
+	}
+	mgrB, err := New(Config{DefaultNamespace: "acme", Launcher: launcherB, LocalTools: localTools, StateRoot: stateRoot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := mgrB.RecoverWorkspaces(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered != 1 {
+		t.Fatalf("expected one recovered workspace, got %d", recovered)
+	}
+
+	serverB := httptest.NewServer(mgrB)
+	defer serverB.Close()
+
+	detailRes, err := http.Get(serverB.URL + "/apis/v1/namespaces/acme/workspaces/bp-ig-fix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer detailRes.Body.Close()
+	if detailRes.StatusCode != http.StatusOK {
+		t.Fatalf("detail status = %d", detailRes.StatusCode)
+	}
+	var detail workspaceDetail
+	if err := json.NewDecoder(detailRes.Body).Decode(&detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.Runtime == nil || len(detail.Runtime.LocalTools) != 1 || detail.Runtime.LocalTools[0].Name != "fhir-validator" {
+		t.Fatalf("unexpected recovered runtime local tools %#v", detail.Runtime)
+	}
+	if detail.Name != "bp-ig-fix" {
+		t.Fatalf("unexpected recovered workspace detail %#v", detail)
+	}
+
+	metadataPath := filepath.Join(stateRoot, "acme", "bp-ig-fix", workspaceMetadataFilename)
+	raw, err := os.ReadFile(metadataPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"template": "acme-rpm-ig"`) {
+		t.Fatalf("expected metadata to preserve template, got %s", raw)
+	}
+}
+
 func TestManagerUIRoutes(t *testing.T) {
 	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -546,6 +769,7 @@ func TestManagerUIRoutes(t *testing.T) {
 	runtimeURL, _ := url.Parse(runtime.URL)
 
 	launcher := &fakeLauncher{
+		baseDir: t.TempDir(),
 		runtime: &Runtime{
 			Name:    "bp-ig-fix",
 			APIBase: runtimeURL,
@@ -579,6 +803,19 @@ func TestManagerUIRoutes(t *testing.T) {
 	if !strings.Contains(string(homeBody), "Create Workspace") || !strings.Contains(string(homeBody), "/apis/v1/local-tools") {
 		t.Fatalf("unexpected home page body: %s", homeBody)
 	}
+	if !strings.Contains(string(homeBody), "Participant Name") || !strings.Contains(string(homeBody), "WS Language Tutorial") {
+		t.Fatalf("expected home page participant and tutorial controls, got %s", homeBody)
+	}
+
+	guideRes, err := http.Get(server.URL + "/ws-language")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer guideRes.Body.Close()
+	guideBody, _ := io.ReadAll(guideRes.Body)
+	if !strings.Contains(string(guideBody), "Queueing Trick") || !strings.Contains(string(guideBody), "ws validator") {
+		t.Fatalf("unexpected ws language guide body: %s", guideBody)
+	}
 
 	createRes, err := http.Post(server.URL+"/apis/v1/namespaces/acme/workspaces", "application/json", strings.NewReader(`{"name":"bp-ig-fix","topics":[{"name":"bp-panel-validator"}]}`))
 	if err != nil {
@@ -606,5 +843,8 @@ func TestManagerUIRoutes(t *testing.T) {
 	}
 	if !strings.Contains(string(appBody), "Prompt Queue") || !strings.Contains(string(appBody), "Clear My Queue") || !strings.Contains(string(appBody), "Refresh Queue") {
 		t.Fatalf("expected app page body to expose queue controls, got %s", appBody)
+	}
+	if !strings.Contains(string(appBody), "Participant Name") || !strings.Contains(string(appBody), "Use Name") || !strings.Contains(string(appBody), "WS Language Tutorial") {
+		t.Fatalf("expected app page body to expose participant naming and tutorial controls, got %s", appBody)
 	}
 }

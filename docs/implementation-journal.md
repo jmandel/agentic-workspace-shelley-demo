@@ -889,3 +889,90 @@
   - a delayed active prompt keeps the queue live long enough for headless
     Chromium to verify the active prompt, queued prompt, and cancel control in
     the rendered DOM
+
+### 2026-03-10 update — queue editing/reordering and demo-profile permissions
+- Shelley queue management now supports:
+  - `PATCH /topics/{topic}/queue/{promptId}` to edit queued prompt text
+  - `POST /topics/{topic}/queue/{promptId}/move` with `direction`
+  - move directions `up`, `down`, `top`, and `bottom`
+- Topic websocket state now emits:
+  - `queue_entry_updated`
+  - `queue_entry_moved`
+  - plus an authoritative `queue_snapshot` after each mutation
+- The current demo profile now treats queue management as shared among connected
+  participants:
+  - any connected client may edit, reorder, or delete queued prompts
+  - `submittedBy` is still preserved for visibility in the queue UI
+  - `clear-mine` remains sender-specific
+- The manager-hosted topic page now renders queued prompts as bottom-of-chat
+  editable cards with:
+  - `Save`
+  - `Top`
+  - `Up`
+  - `Down`
+  - `Bottom`
+  - `Delete`
+- The Bun CLI now also supports queue mutation:
+  - `edit-queue`
+  - `move-queue`
+  - interactive `/edit`, `/top`, `/up`, `/down`, `/bottom`
+- I also cleaned up the manager home page layout after manual review:
+  - each workspace now renders as its own card
+  - topic actions are visually separated from workspace deletion
+  - topic creation has its own section instead of sharing a row with delete
+
+### Validation update — queue mutation and UI cleanup
+- Focused Shelley queue tests:
+  - `go test ./server -run 'TestWorkspaceTopicQueueRESTAndCancellation|TestWorkspaceTopicQueueRESTUpdateAndMove|TestWorkspaceTopicWSQueuesPrompt|TestWorkspaceTopicAPIChatUsesTopicQueue|TestWorkspaceTopicWSReplaysRecentMessagesOnConnect|TestWorkspaceTopicWSReplaysUserMessagesOnConnect' -v`
+- Shelley loop + server suites:
+  - `go test ./loop ./server`
+- Manager suite:
+  - `cd shelleymanager && go test ./...`
+- Full smoke in process mode:
+  - `./test/smoke.sh`
+- Full smoke in `bwrap` mode:
+  - `SMOKE_RUNTIME_MODE=bwrap ./test/smoke.sh`
+- The smoke now additionally proves:
+  - browser-rendered workspace cards on the manager home page
+  - queue edit through the public manager route
+  - queue move-to-top through the public manager route
+  - browser queue controls for save/top/up/down/delete
+
+### 2026-03-10 update — participant naming, ws tutorial, and manager recovery
+- The manager UI now has an explicit participant-name control instead of only a
+  hidden localStorage-generated `client_id`.
+- The manager home page and topic page both let the user choose a human-readable
+  participant name, persist it locally, and reuse it for browser topic
+  sessions.
+- The manager now serves a real `GET /ws-language` tutorial page for the
+  predictable-model `ws ...` syntax, and the predictable model itself now
+  responds to `ws help`, `ws tutorial`, and `ws examples` with a compact guide.
+- `shelleymanager` now persists workspace metadata to disk and recovers it on
+  startup by scanning `state-dir/<namespace>/<workspace>/`.
+  - Metadata includes namespace, name, created time, template, and selected
+    local tools.
+  - Recovery relaunches workspaces from the persisted state root without
+    reseeding template files.
+  - Workspace deletion now removes the persisted state dir, so recovered state
+    matches user-visible deletes.
+- Manager shutdown is now covered explicitly as a lifecycle behavior:
+  - tracked runtimes are stopped on `mgr.Shutdown`
+  - child runtimes are launched with a parent-death signal so process and
+    bubblewrap demos do not leave orphaned Shelley processes behind on manager
+    teardown
+
+### Validation update — recovery and ws tutorial work
+- Shelley loop validation:
+  - `go test ./loop -run 'TestPredictableServiceWSHelp|TestPredictableServiceWSDemo' -v`
+  - `go test ./loop ./server`
+- Manager validation:
+  - `go test ./manager -run 'TestManager(DeleteRemovesWorkspaceState|ShutdownStopsTrackedRuntimes|RecoverPersistedWorkspaces|UIRoutes|LocalToolsCatalogAndWorkspaceSelection)' -v`
+  - `go test ./...`
+- Full smoke:
+  - `./test/smoke.sh`
+  - `SMOKE_RUNTIME_MODE=bwrap ./test/smoke.sh`
+- The smoke now additionally proves:
+  - manager home page exposes participant naming controls
+  - manager serves the live `ws-language` tutorial route
+  - topic page exposes participant naming controls
+  - the browser-rendered home page shows the saved participant name

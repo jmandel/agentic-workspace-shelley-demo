@@ -177,6 +177,7 @@ func (l CommandLauncher) buildProcessCommand(spec LaunchSpec, hostPort int) (*ex
 	args := l.shelleyArgs(spec.DBPath, spec.WorkspaceDir, hostPort, l.ConfigPath)
 	cmd := exec.Command(l.ShelleyBinary, args...)
 	cmd.Env = l.runtimeEnv(os.Environ(), spec, false)
+	configureChildProcessLifecycle(cmd)
 	return cmd, nil
 }
 
@@ -216,7 +217,9 @@ func (l CommandLauncher) buildDockerCommand(spec LaunchSpec, hostPort int) (*exe
 		args = append(args, entrypoint)
 	}
 	args = append(args, l.shelleyArgs(filepath.Join(containerState, "shelley.db"), containerWorkspace, hostPort, l.ConfigPath)...)
-	return exec.Command(dockerBin, args...), nil
+	cmd := exec.Command(dockerBin, args...)
+	configureChildProcessLifecycle(cmd)
+	return cmd, nil
 }
 
 func (l CommandLauncher) buildBwrapCommand(spec LaunchSpec, hostPort int) (*exec.Cmd, error) {
@@ -253,7 +256,9 @@ func (l CommandLauncher) buildBwrapCommand(spec LaunchSpec, hostPort int) (*exec
 	}
 	args = append(args, "--", bwrapSandboxBinary)
 	args = append(args, l.shelleyArgs(bwrapSandboxDB, bwrapSandboxWorkspace, hostPort, l.bwrapConfigPath(spec))...)
-	return exec.Command(bwrap, args...), nil
+	cmd := exec.Command(bwrap, args...)
+	configureChildProcessLifecycle(cmd)
+	return cmd, nil
 }
 
 func (l CommandLauncher) shelleyArgs(dbPath, workspaceDir string, hostPort int, configPath string) []string {
@@ -493,6 +498,15 @@ func writeLocalToolWrapper(path, toolName, relativeCommand string) error {
 		"set -eu\n" +
 		"exec \"$WORKSPACE_TOOLS_DIR/" + toolName + "/" + filepath.ToSlash(relativeCommand) + "\" \"$@\"\n"
 	return os.WriteFile(path, []byte(script), 0o755)
+}
+
+func configureChildProcessLifecycle(cmd *exec.Cmd) {
+	if cmd == nil {
+		return
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Pdeathsig: syscall.SIGTERM,
+	}
 }
 
 func prependPath(dir, current string) string {
