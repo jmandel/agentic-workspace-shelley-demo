@@ -729,3 +729,19 @@
 - The current demo keeps `fhir-validator` as a mounted wrapper script rather than a real validator JAR plus explicit JRE dependency model.
 - In `bwrap` mode, host system runtime binaries such as `bun` and `java` are visible because the launcher mounts standard host runtime directories like `/usr` and `/bin` read-only into the sandbox.
 - That is good enough for the current demo, but if local tool catalog entries later need explicit transitive runtime dependencies, the catalog model will need to grow beyond `commands + guidance + requirements`.
+
+### 2026-03-10 update — RFC corrections from implementation
+- Updated `0002-topic-realtime-wire-contract.md` to better match the demo path we actually proved:
+  - bounded catchup-on-connect is required
+  - exact `since=<eventId>` resumability is deferred
+  - replay may come from a translated durable transcript, not only an in-memory event buffer
+  - runtimes may emit a compatibility `text` event for human-readable tool results
+- Updated `0003-workspace-tool-api-payloads.md` to clarify the demo-proven stdio MCP shape:
+  - `transport.command` runs inside the workspace runtime
+  - relative `cwd` resolves from the workspace root
+  - workspace-local Bun scripts are a valid stdio MCP registration pattern
+  - hosted `tools` metadata is authoritative for the workspace and does not require automatic remote MCP tool mirroring
+- Updated `0005-local-tool-catalog.md` to capture the runtime dependency lesson from the demo:
+  - catalog entries may expose descriptive `requirements`
+  - clients select only the local tool itself, not its transitive dependencies
+  - managers may satisfy those dependencies through either selected mounts or base runtime binaries

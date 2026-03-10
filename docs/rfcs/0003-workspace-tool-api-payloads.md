@@ -30,6 +30,9 @@ tool definition shape rather than inventing a parallel schema.
 So:
 - hosted workspace API fields are ours
 - the nested MCP `tools` payload should use MCP tool objects directly
+- the hosted `tools` payload is the authoritative workspace contract and does
+  not require automatic validation against or mirroring from the remote MCP
+  server at registration time
 
 For the demo contract, "MCP tool object" means the MCP server tools shape from
 the current MCP tools spec, including:
@@ -208,6 +211,22 @@ Optional:
 - `args`
 - `env`
 - `cwd`
+
+The command runs inside the isolated workspace runtime, not on the manager
+host. If `cwd` is relative, it resolves from the workspace root.
+
+Demo-proven example:
+
+```json
+{
+  "type": "stdio",
+  "command": "bun",
+  "args": ["./.demo/hl7-jira-mcp.js"],
+  "cwd": "."
+}
+```
+
+This shape is useful for workspace-local MCP fixtures and wrapper scripts.
 
 ### MCP streamable HTTP
 

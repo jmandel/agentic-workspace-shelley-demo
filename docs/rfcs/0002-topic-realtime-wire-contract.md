@@ -14,7 +14,8 @@ It defines:
 - approval events
 - reconnect/catchup behavior for an active topic session
 
-It does not try to solve durable replay across runtime restart.
+It does not try to solve durable replay across runtime restart, and it keeps the
+demo replay contract simpler than a full resumable event-log protocol.
 
 ## Scope
 
@@ -32,9 +33,10 @@ Each active topic runtime has a `sessionId`.
 
 Important meaning:
 - `sessionId` identifies one live topic runtime session
-- `eventId` ordering is only meaningful within one `sessionId`
-- if the runtime restarts and `sessionId` changes, old `eventId` values are no
-  longer resumable
+- if the runtime later adopts authoritative `eventId` resumability, ordering is
+  only meaningful within one `sessionId`
+- if the runtime restarts and `sessionId` changes, old session-local replay
+  state is no longer resumable
 
 For the demo contract, replay is guaranteed only within the current live
 `sessionId`.
@@ -43,35 +45,38 @@ For the demo contract, replay is guaranteed only within the current live
 
 ### Connect request
 
-Clients connect normally, with an optional `since` query parameter:
+For the demo contract, clients connect normally with no required resume
+parameter:
 
 ```text
-wss://.../topics/debug-timeout?since=e_42
+wss://.../topics/debug-timeout
 ```
 
-Meaning:
-- if `since` is omitted, the server must send a bounded replay window for the
-  current active turn and any unresolved approval requests
-- if `since` is present, the server attempts to replay events strictly after
-  that event ID within the current `sessionId`
+The server must send a bounded replay window for the current active topic
+session before switching to the live tail.
 
 ### Replay window requirement
 
-The runtime must retain an ordered in-memory replay window per active topic
-session.
-
-For the demo, that window must be large enough to cover:
+For the demo, the replay window must be large enough to cover:
 - the current in-flight prompt, if any
 - unresolved approval requests
-- recent events needed for a reconnecting or late-joining client to catch up to
-  the active turn
+- recent assistant text and tool activity needed for a reconnecting or late
+  joining client to catch up to the active turn
 
 The protocol does not yet require replay after runtime restart.
 
-If `since` cannot be fully honored because the requested event is no longer in
-the retained window, the server must:
-- replay from the oldest retained event it still has for that `sessionId`
-- set `replayTruncated: true`
+The runtime may satisfy this replay requirement either by:
+- replaying a retained in-memory event buffer, or
+- translating a bounded recent durable transcript into websocket events
+
+The second form is acceptable for the demo, and is what the current Shelley
+implementation does.
+
+### Deferred resume-by-event-id
+
+An optional `since=<eventId>` resumability parameter is still desirable, but it
+is explicitly deferred from the demo contract until the protocol defines a true
+authoritative event-log model.
 
 ### First server message
 
@@ -83,20 +88,14 @@ The server must send a `connected` message first:
   "protocolVersion": "demo-v1",
   "topic": "debug-timeout",
   "sessionId": "s_123",
-  "latestEventId": "e_88",
-  "replayRequestedSince": "e_42",
-  "replayFrom": "e_43",
-  "replayTruncated": false
+  "replay": true
 }
 ```
 
 Field meanings:
 - `protocolVersion`: fixed as `demo-v1` for this contract
-- `latestEventId`: newest event known at connect time
-- `replayRequestedSince`: the client-supplied `since`, or `null`
-- `replayFrom`: the first event actually replayed after connect, or `null`
-- `replayTruncated`: `true` if the server could not honor the requested replay
-  point and started from a later retained event
+- `replay`: `true` means the server will now send a bounded replay window for
+  the current active topic session before switching to live events
 
 After `connected`, the server sends zero or more replayed events in order,
 followed by the live tail.
@@ -246,6 +245,8 @@ Rules:
 - `status` must be one of `running`, `completed`, or `failed`
 - `data` is optional text for the demo
 - structured or binary tool payloads are out of scope for this contract
+- for compatibility with thin clients that only render `text`, a runtime may
+  also emit a `text` event containing the same human-readable tool result
 
 ### `approval_request`
 
@@ -359,6 +360,7 @@ This RFC defines the demo guarantee as:
 
 Explicitly deferred:
 - durable replay across runtime restart
+- `since=<eventId>` resumability
 - full transcript bootstrap from websocket alone
 - image or binary content parts
 - multiplexing multiple topics over one websocket

@@ -96,6 +96,7 @@ GET /apis/v1/namespaces/{ns}/workspaces/{name}
       }
     ],
     "guidance": "Use via bash to validate generated FHIR artifacts.",
+    "requirements": ["java"],
     "version": "demo"
   },
   {
@@ -130,7 +131,16 @@ Rules:
 - `commands` is the user/model-facing command metadata the manager promises to
   make available inside enabled workspaces
 - `guidance` is optional but strongly recommended
+- `requirements` is optional descriptive metadata for runtime dependencies such
+  as `java`
 - `version` is optional
+
+Additional rules:
+
+- `requirements` is descriptive and discoverable, but it is not separately
+  selected by clients
+- if a workspace enables `fhir-validator`, the client selects only
+  `fhir-validator`, not its transitive runtime dependencies
 
 ## Workspace Create Shape
 
@@ -222,6 +232,17 @@ When a workspace enables a local tool, the manager is responsible for:
 - ensuring those commands match the catalog metadata
 - generating workspace guidance so Shelley knows the tool exists and how to use
   it through bash
+
+In practice, the manager may satisfy this using a mix of:
+
+- selected per-workspace tool mounts
+- base runtime binaries already present in the sandbox
+
+Example:
+
+- `fhir-validator` may be a selected mounted local tool
+- `java` may come from the base runtime image or read-only runtime mounts
+- the client still selects only `fhir-validator`
 
 The protocol does not standardize how the manager accomplishes this.
 
