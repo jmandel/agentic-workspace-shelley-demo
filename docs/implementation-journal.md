@@ -330,3 +330,37 @@
 - `go test ./db ./server` in `shelley/`
 - `./test/smoke.sh` from the workspace root
   - now launches Shelley with `--workspace-dir`
+
+### 2026-03-10 update — MCP-backed workspace tools
+- Wired real MCP execution into the existing `workspace_<tool>` runtime wrapper using the official Go MCP SDK.
+- Supported transports in this slice:
+  - `stdio`
+  - `streamable_http`
+- The persisted workspace tool record is still the source of truth for:
+  - which wrapper tool name Shelley exposes
+  - which actions are visible to a given topic
+  - approval and audit policy
+- Runtime behavior added:
+  - allowed and approved `protocol:"mcp"` workspace tools now connect to the configured MCP server and call the selected action as the remote MCP tool name
+  - wrapper `input` is passed through as MCP tool arguments and must currently be a JSON object
+  - MCP text content is returned to Shelley as normal `llm.ContentTypeText`
+  - MCP structured content is preserved by converting it to JSON text content instead of dropping it
+  - non-text MCP content is not rendered specially yet; it is funneled through the same typed conversion path and serialized to JSON text for now
+
+### Notes from this slice
+- This is deliberately execution-first, not discovery-first.
+- Shelley does not yet sync or infer the remote MCP server's tool catalog.
+- The `actions` array stored in the workspace tool record must still be populated manually, and those action names must match remote MCP tool names.
+- MCP sessions are currently created fresh per tool call.
+  - This keeps the runtime simple and made the first transport integration straightforward.
+  - It also means there is no session pooling, warm connection reuse, or long-lived server push handling yet beyond what the Go SDK transport establishes for a single call.
+
+### Tests added
+- stdio MCP workspace tool executes successfully and returns text content
+- streamable HTTP MCP workspace tool executes successfully and returns text plus structured-content fallback
+- invalid non-object wrapper input is rejected before calling MCP
+
+### Validation update — MCP workspace tools checkpoint
+- `go test ./server -run 'TestWorkspaceToolMCP|TestWorkspaceToolCallsAreLogged|TestWorkspaceToolApproval' -v` in `shelley/`
+- `go test ./db ./server` in `shelley/`
+- `./test/smoke.sh` from the workspace root
