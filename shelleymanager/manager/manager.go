@@ -548,6 +548,13 @@ func (m *Manager) proxyRuntime(w http.ResponseWriter, r *http.Request, ws *Works
 			req.Host = target.Host
 			req.URL.Path = cleanProxyPath(runtimePath)
 			req.URL.RawPath = req.URL.Path
+			// Browser websocket clients send an Origin for the manager host. Rewrite it
+			// to the private runtime origin so the runtime's same-origin websocket check
+			// accepts proxied topic connections.
+			if origin := strings.TrimSpace(req.Header.Get("Origin")); origin != "" {
+				req.Header.Set("X-Forwarded-Origin", origin)
+				req.Header.Set("Origin", target.Scheme+"://"+target.Host)
+			}
 		},
 		ErrorHandler: func(rw http.ResponseWriter, req *http.Request, err error) {
 			m.logger.Error("runtime proxy failed", "workspace", ws.Name, "path", runtimePath, "error", err)

@@ -765,3 +765,25 @@
   - websocket-originated prompts persist into Shelley and appear in the native Shelley UI
   - runtime API / native Shelley UI prompts emit `user` events onto the manager topic websocket
   - the manager `Open Shelley UI` link now resolves to the correct Shelley conversation route `/c/{topic}`
+
+### 2026-03-10 update — browser websocket + manager UI lifecycle controls
+- Found and fixed the real reason the lightweight topic page stayed blank in Chromium while the CLI worked:
+  - the manager websocket proxy was forwarding the browser `Origin` header for the public manager host straight through to the private Shelley runtime
+  - Shelley's websocket accept path treated that as cross-origin and returned `403`
+  - the manager now rewrites proxied runtime `Origin` to the runtime origin and preserves the original browser origin in `X-Forwarded-Origin`
+- Added coverage at the manager layer for the exact browser-origin failure mode:
+  - `manager_test.go` now dials the manager ACP websocket with an explicit browser-style `Origin` header and asserts that the proxied runtime accepts it
+  - the smoke path now includes an actual headless Chromium check that the topic web UI reaches `Connected`
+- Tightened the lightweight topic page UX:
+  - it now shows `Connecting...` first
+  - failed websocket setup becomes a visible `Realtime connection failed` message instead of silently collapsing to a blank page plus `Disconnected`
+  - sending a prompt while the websocket is not open now yields an explicit visible error
+- Added the missing manager UI lifecycle controls requested during manual testing:
+  - home page workspace cards now list all topics
+  - each workspace card can create a new topic through the real manager API
+  - each listed topic can be deleted from the home page
+  - each workspace can be deleted from the home page
+  - the topic page itself now also exposes `Delete Topic`
+- Confirmed the manager can be launched on a fixed port for the manual demo:
+  - `shelleymanager -listen 127.0.0.1:31337 ...`
+  - the random-port mode is optional, not required

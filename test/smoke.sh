@@ -177,6 +177,12 @@ require_output "$HOME_HTML" "Create Workspace" "GET / serves the manager web ent
 APP_HTML="$(curl -sf "http://localhost:$PORT/app/$MANAGER_NAMESPACE/$WORKSPACE_NAME/$TOPIC_NAME")"
 require_output "$APP_HTML" "Send Prompt" "GET /app/{ns}/{workspace}/{topic} serves the topic web UI"
 
+if command -v chromium >/dev/null 2>&1; then
+  APP_DOM="$(chromium --headless --disable-gpu --virtual-time-budget=4000 --dump-dom "http://localhost:$PORT/app/$MANAGER_NAMESPACE/$WORKSPACE_NAME/$TOPIC_NAME" 2>/dev/null)"
+  require_output "$APP_DOM" '<span id="status" class="meta">Connected</span>' "headless Chromium connects to the topic web UI websocket"
+  require_output "$APP_DOM" '<div class="meta">Connected</div>' "topic web UI renders the initial connected event in a browser"
+fi
+
 PROFILE_CONTENT="$(cat "$WORKSPACE_ROOT/input/fsh/BloodPressurePanel.fsh")"
 require_output "$PROFILE_CONTENT" "component contains" "workspace creation seeds the demo blood pressure profile"
 

@@ -29,6 +29,8 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
     .tool { padding:12px; border:1px solid var(--line); border-radius:12px; background:#fff; }
     .workspace { padding:12px; border-top:1px solid var(--line); }
     .workspace:first-child { border-top:0; padding-top:0; }
+    .topic { padding:10px 0; border-top:1px solid #eee4d6; }
+    .topic:first-child { border-top:0; }
     code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
     pre { white-space: pre-wrap; background: #f7f2e8; border-radius: 12px; padding: 12px; overflow:auto; }
     .status { min-height: 22px; color: var(--muted); }
@@ -87,6 +89,19 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
     const workspacesEl = document.getElementById('workspaces');
     const statusEl = document.getElementById('status');
 
+    function escapeHTML(value) {
+      return String(value == null ? '' : value)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
+    function workspaceAPI(ns, name) {
+      return '/apis/v1/namespaces/' + encodeURIComponent(ns) + '/workspaces/' + encodeURIComponent(name);
+    }
+
     async function readJSON(res, label) {
       const text = await res.text();
       if (!res.ok) {
@@ -100,6 +115,11 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
       }
     }
 
+    async function jsonRequest(url, options, label) {
+      const res = await fetch(url, options);
+      return readJSON(res, label);
+    }
+
     async function loadLocalTools() {
       const res = await fetch('/apis/v1/local-tools');
       const tools = await readJSON(res, 'load local tools');
@@ -111,14 +131,14 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
         const requires = (tool.requirements && tool.requirements.length)
           ? '<div class="muted">Requires: ' + tool.requirements.join(', ') + '</div>' : '';
         const commands = (tool.commands && tool.commands.length)
-          ? '<div class="muted">Commands: ' + tool.commands.map(c => '<code>' + c.name + '</code>').join(', ') + '</div>' : '';
+          ? '<div class="muted">Commands: ' + tool.commands.map(c => '<code>' + escapeHTML(c.name) + '</code>').join(', ') + '</div>' : '';
         const checked = idx === 0 ? 'checked' : '';
         return '<label class="tool">'
           + '<div class="row">'
-          + '<input type="checkbox" name="localTool" value="' + tool.name + '" ' + checked + ' style="width:auto;">'
-          + '<strong>' + tool.name + '</strong>'
+          + '<input type="checkbox" name="localTool" value="' + escapeHTML(tool.name) + '" ' + checked + ' style="width:auto;">'
+          + '<strong>' + escapeHTML(tool.name) + '</strong>'
           + '</div>'
-          + '<div class="muted">' + (tool.description || '') + '</div>'
+          + '<div class="muted">' + escapeHTML(tool.description || '') + '</div>'
           + requires
           + commands
           + '</label>';
@@ -126,23 +146,42 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
     }
 
     function workspaceCard(ws) {
-      const topic = (ws.topics && ws.topics[0] && ws.topics[0].name) || 'bp-panel-validator';
-      const openHref = '/app/' + encodeURIComponent(ws.namespace || namespace) + '/' + encodeURIComponent(ws.name) + '/' + encodeURIComponent(topic);
-      const shelleyHref = '/shelley/' + encodeURIComponent(ws.namespace || namespace) + '/' + encodeURIComponent(ws.name) + '/' + encodeURIComponent(topic);
-      const cli = 'WS_MANAGER=' + window.location.origin + ' bun run cli.ts connect ' + ws.name + ' ' + topic;
-      const localTools = ws.runtime && ws.runtime.localTools ? ws.runtime.localTools.map(t => '<code>' + t.name + '</code>').join(', ') : '<span class="muted">none</span>';
+      const wsNamespace = ws.namespace || namespace;
+      const topics = Array.isArray(ws.topics) ? ws.topics : [];
+      const defaultTopic = (topics[0] && topics[0].name) || 'bp-panel-validator';
+      const cli = 'WS_MANAGER=' + window.location.origin + ' bun run cli.ts connect ' + ws.name + ' ' + defaultTopic;
+      const localTools = ws.runtime && ws.runtime.localTools ? ws.runtime.localTools.map(t => '<code>' + escapeHTML(t.name) + '</code>').join(', ') : '<span class="muted">none</span>';
+      const topicList = topics.length > 0
+        ? topics.map(topic => {
+            const topicName = topic.name;
+            const openHref = '/app/' + encodeURIComponent(wsNamespace) + '/' + encodeURIComponent(ws.name) + '/' + encodeURIComponent(topicName);
+            const shelleyHref = '/shelley/' + encodeURIComponent(wsNamespace) + '/' + encodeURIComponent(ws.name) + '/' + encodeURIComponent(topicName);
+            return '<div class="topic">'
+              + '<div class="row" style="justify-content:space-between;">'
+              + '<strong><code>' + escapeHTML(topicName) + '</code></strong>'
+              + '<button type="button" class="secondary" data-action="delete-topic" data-namespace="' + escapeHTML(wsNamespace) + '" data-workspace="' + escapeHTML(ws.name) + '" data-topic="' + escapeHTML(topicName) + '">Delete Topic</button>'
+              + '</div>'
+              + '<div class="row" style="margin-top:10px;">'
+              + '<a href="' + openHref + '"><button type="button">Open Topic</button></a>'
+              + '<a href="' + shelleyHref + '"><button type="button" class="secondary">Open Shelley UI</button></a>'
+              + '</div>'
+              + '</div>';
+          }).join('')
+        : '<p class="muted">No topics yet.</p>';
       return '<div class="workspace">'
         + '<div class="row" style="justify-content:space-between;">'
-        + '<strong>' + ws.name + '</strong>'
-        + '<span class="muted">' + ws.status + '</span>'
+        + '<strong>' + escapeHTML(ws.name) + '</strong>'
+        + '<span class="muted">' + escapeHTML(ws.status) + '</span>'
         + '</div>'
-        + '<div class="muted">Topic: <code>' + topic + '</code></div>'
+        + '<div class="muted">Topics</div>'
+        + topicList
         + '<div class="muted">Local tools: ' + localTools + '</div>'
         + '<div class="row" style="margin-top:10px;">'
-        + '<a href="' + openHref + '"><button type="button">Open Topic</button></a>'
-        + '<a href="' + shelleyHref + '"><button type="button" class="secondary">Open Shelley UI</button></a>'
+        + '<input type="text" data-role="new-topic-name" data-namespace="' + escapeHTML(wsNamespace) + '" data-workspace="' + escapeHTML(ws.name) + '" placeholder="new-topic-name">'
+        + '<button type="button" data-action="create-topic" data-namespace="' + escapeHTML(wsNamespace) + '" data-workspace="' + escapeHTML(ws.name) + '">Create Topic</button>'
+        + '<button type="button" class="secondary" data-action="delete-workspace" data-namespace="' + escapeHTML(wsNamespace) + '" data-workspace="' + escapeHTML(ws.name) + '">Delete Workspace</button>'
         + '</div>'
-        + '<pre>' + cli + '</pre>'
+        + '<pre>' + escapeHTML(cli) + '</pre>'
         + '</div>';
     }
 
@@ -163,6 +202,64 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
       }));
       workspacesEl.innerHTML = details.map(workspaceCard).join('');
     }
+
+    workspacesEl.addEventListener('click', async (event) => {
+      const button = event.target.closest('button[data-action]');
+      if (!button) return;
+
+      const action = button.dataset.action;
+      const wsNamespace = button.dataset.namespace || namespace;
+      const wsName = button.dataset.workspace;
+      if (!wsName) return;
+
+      try {
+        if (action === 'create-topic') {
+          const input = workspacesEl.querySelector('input[data-role="new-topic-name"][data-namespace="' + CSS.escape(wsNamespace) + '"][data-workspace="' + CSS.escape(wsName) + '"]');
+          const topicName = input && input.value ? input.value.trim() : '';
+          if (!topicName) {
+            statusEl.textContent = 'Enter a topic name first.';
+            return;
+          }
+          statusEl.textContent = 'Creating topic...';
+          await jsonRequest(workspaceAPI(wsNamespace, wsName) + '/topics', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name: topicName})
+          }, 'create topic');
+          window.location.href = '/app/' + encodeURIComponent(wsNamespace) + '/' + encodeURIComponent(wsName) + '/' + encodeURIComponent(topicName);
+          return;
+        }
+
+        if (action === 'delete-topic') {
+          const topicName = button.dataset.topic;
+          if (!topicName) return;
+          if (!window.confirm('Delete topic "' + topicName + '"?')) return;
+          statusEl.textContent = 'Deleting topic...';
+          const res = await fetch(workspaceAPI(wsNamespace, wsName) + '/topics/' + encodeURIComponent(topicName), {
+            method: 'DELETE'
+          });
+          if (!res.ok) {
+            throw new Error('delete topic: ' + res.status + ' ' + (await res.text()));
+          }
+          await loadWorkspaces();
+          statusEl.textContent = '';
+          return;
+        }
+
+        if (action === 'delete-workspace') {
+          if (!window.confirm('Delete workspace "' + wsName + '"?')) return;
+          statusEl.textContent = 'Deleting workspace...';
+          const res = await fetch(workspaceAPI(wsNamespace, wsName), {method: 'DELETE'});
+          if (!res.ok) {
+            throw new Error('delete workspace: ' + res.status + ' ' + (await res.text()));
+          }
+          await loadWorkspaces();
+          statusEl.textContent = '';
+        }
+      } catch (err) {
+        statusEl.textContent = err.message || String(err);
+      }
+    });
 
     async function registerDemoJiraTool(name) {
       const fixtureAssetRes = await fetch('/demo-assets/hl7-jira-mcp.js');
@@ -299,7 +396,7 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
     pre { white-space: pre-wrap; background:#f7f2e8; border-radius:12px; padding:12px; overflow:auto; }
   </style>
 </head>
-<body data-ws-path="{{.WSPath}}">
+<body data-ws-path="{{.WSPath}}" data-namespace="{{.Namespace}}" data-workspace="{{.Workspace}}" data-topic="{{.Topic}}">
   <main>
     <div class="card">
       <div class="row" style="justify-content:space-between;">
@@ -308,6 +405,7 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
           <div class="meta">Topic <code>{{.Topic}}</code> · Namespace <code>{{.Namespace}}</code></div>
         </div>
         <div class="row">
+          <button id="delete-topic" type="button" class="secondary">Delete Topic</button>
           <a href="/shelley/{{.Namespace}}/{{.Workspace}}/{{.Topic}}"><button type="button" class="secondary">Open Shelley UI</button></a>
           <a href="/"><button type="button">Back</button></a>
         </div>
@@ -334,6 +432,8 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
     const wsScheme = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
     const wsURL = wsScheme + window.location.host + wsPath;
     const conn = new WebSocket(wsURL);
+    let wsOpened = false;
+    let wsFailureShown = false;
 
     function appendMessage(kind, title, body) {
       const div = document.createElement('div');
@@ -349,9 +449,32 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
       div.scrollIntoView({behavior:'smooth', block:'end'});
     }
 
-    conn.onopen = () => { statusEl.textContent = 'Connected'; };
-    conn.onclose = () => { statusEl.textContent = 'Disconnected'; };
-    conn.onerror = () => { statusEl.textContent = 'WebSocket error'; };
+    function showConnectionFailure(message) {
+      if (wsFailureShown) return;
+      wsFailureShown = true;
+      statusEl.textContent = 'Connection failed';
+      appendMessage('error', 'Realtime connection failed', message);
+    }
+
+    statusEl.textContent = 'Connecting...';
+    conn.onopen = () => {
+      wsOpened = true;
+      statusEl.textContent = 'Connected';
+    };
+    conn.onclose = () => {
+      if (!wsOpened) {
+        showConnectionFailure('The topic websocket could not connect. Reload after the workspace is ready or check the manager logs.');
+        return;
+      }
+      statusEl.textContent = 'Disconnected';
+    };
+    conn.onerror = () => {
+      if (!wsOpened) {
+        showConnectionFailure('The topic websocket was rejected before the session could start.');
+        return;
+      }
+      statusEl.textContent = 'WebSocket error';
+    };
     conn.onmessage = (event) => {
       const msg = JSON.parse(event.data);
       switch (msg.type) {
@@ -392,8 +515,27 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
       const input = document.getElementById('prompt');
       const text = input.value.trim();
       if (!text) return;
+      if (conn.readyState !== WebSocket.OPEN) {
+        showConnectionFailure('Cannot send a prompt because the realtime connection is not open.');
+        return;
+      }
       conn.send(JSON.stringify({type: 'prompt', data: text}));
       input.value = '';
+    });
+
+    document.getElementById('delete-topic').addEventListener('click', async () => {
+      const topic = document.body.dataset.topic;
+      const workspace = document.body.dataset.workspace;
+      const namespace = document.body.dataset.namespace;
+      if (!window.confirm('Delete topic "' + topic + '"?')) return;
+      const res = await fetch('/apis/v1/namespaces/' + encodeURIComponent(namespace) + '/workspaces/' + encodeURIComponent(workspace) + '/topics/' + encodeURIComponent(topic), {
+        method: 'DELETE'
+      });
+      if (!res.ok) {
+        appendMessage('error', 'Delete Topic Failed', 'HTTP ' + res.status);
+        return;
+      }
+      window.location.href = '/';
     });
   </script>
 </body>

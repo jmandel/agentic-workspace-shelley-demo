@@ -71,6 +71,8 @@ func TestManagerCreateAndProxyRoutes(t *testing.T) {
 		case r.URL.Path == "/ws/topics" && r.Method == http.MethodPost:
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{"name":"general"}`)
+		case r.URL.Path == "/ws/topics/general" && r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
 		case r.URL.Path == "/ws/topics":
 			w.Header().Set("Content-Type", "application/json")
 			io.WriteString(w, `[{"name":"general","clients":0,"busy":false,"createdAt":"2026-03-10T00:00:00Z"}]`)
@@ -141,12 +143,26 @@ func TestManagerCreateAndProxyRoutes(t *testing.T) {
 		t.Fatalf("unexpected proxied file body %q", fileBody)
 	}
 
+	deleteReq, err := http.NewRequest(http.MethodDelete, server.URL+"/apis/v1/namespaces/acme/workspaces/demo/topics/general", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleteRes, err := http.DefaultClient.Do(deleteReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleteRes.Body.Close()
+	if deleteRes.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete topic status = %d", deleteRes.StatusCode)
+	}
+
 	mu.Lock()
 	got := strings.Join(seenPaths, "\n")
 	mu.Unlock()
 	for _, expected := range []string{
 		"POST /ws/topics",
 		"GET /ws/topics",
+		"DELETE /ws/topics/general",
 		"GET /ws/files/readme.txt",
 	} {
 		if !strings.Contains(got, expected) {
@@ -256,6 +272,74 @@ func TestManagerACPProxy(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	_, data, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"connected"`) {
+		t.Fatalf("unexpected websocket payload %s", data)
+	}
+}
+
+func TestManagerACPProxyRewritesBrowserOrigin(t *testing.T) {
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ws/health":
+			io.WriteString(w, `{"status":"ok"}`)
+		case "/ws/topic/general":
+			conn, err := websocket.Accept(w, r, nil)
+			if err != nil {
+				t.Fatalf("accept websocket with browser origin: %v", err)
+			}
+			defer conn.Close(websocket.StatusNormalClosure, "")
+			if got := r.Header.Get("X-Forwarded-Origin"); got == "" {
+				t.Fatal("expected proxy to preserve original browser origin")
+			}
+			if err := conn.Write(context.Background(), websocket.MessageText, []byte(`{"type":"connected","topic":"general","sessionId":"s1"}`)); err != nil {
+				t.Fatalf("write websocket: %v", err)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer runtime.Close()
+
+	runtimeURL, _ := url.Parse(runtime.URL)
+	launcher := &fakeLauncher{
+		runtime: &Runtime{
+			Name:    "demo",
+			APIBase: runtimeURL,
+			Mode:    "fake",
+			Health:  func(context.Context) error { return nil },
+			Stop:    func(context.Context) error { return nil },
+		},
+	}
+	mgr, err := New(Config{DefaultNamespace: "acme", Launcher: launcher})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(mgr)
+	defer server.Close()
+
+	createRes, err := http.Post(server.URL+"/workspaces", "application/json", strings.NewReader(`{"name":"demo"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	createRes.Body.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/acp/acme/demo/topics/general"
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
+		HTTPHeader: http.Header{
+			"Origin": []string{server.URL},
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -513,5 +597,11 @@ func TestManagerUIRoutes(t *testing.T) {
 	appBody, _ := io.ReadAll(appRes.Body)
 	if !strings.Contains(string(appBody), "WS_MANAGER") || !strings.Contains(string(appBody), "/acp/acme/bp-ig-fix/topics/bp-panel-validator") {
 		t.Fatalf("unexpected app page body: %s", appBody)
+	}
+	if !strings.Contains(string(appBody), "Connecting...") || !strings.Contains(string(appBody), "Realtime connection failed") {
+		t.Fatalf("expected app page to expose realtime connection status text, got %s", appBody)
+	}
+	if !strings.Contains(string(appBody), "Delete Topic") {
+		t.Fatalf("expected app page body to expose topic deletion controls, got %s", appBody)
 	}
 }
