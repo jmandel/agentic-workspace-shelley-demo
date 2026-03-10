@@ -533,10 +533,10 @@ func TestManagerLocalToolsCatalogAndWorkspaceSelection(t *testing.T) {
 			io.WriteString(w, `{"status":"ok"}`)
 		case r.URL.Path == "/ws/topics" && r.Method == http.MethodPost:
 			w.WriteHeader(http.StatusCreated)
-			io.WriteString(w, `{"name":"bp-panel-validator"}`)
+			io.WriteString(w, `{"name":"bp-example-validator"}`)
 		case r.URL.Path == "/ws/topics":
 			w.Header().Set("Content-Type", "application/json")
-			io.WriteString(w, `[{"name":"bp-panel-validator","clients":0,"busy":false,"createdAt":"2026-03-10T00:00:00Z"}]`)
+			io.WriteString(w, `[{"name":"bp-example-validator","clients":0,"busy":false,"createdAt":"2026-03-10T00:00:00Z"}]`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -592,7 +592,7 @@ func TestManagerLocalToolsCatalogAndWorkspaceSelection(t *testing.T) {
 	createBody := `{
 		"name":"demo",
 		"template":"acme-rpm-ig",
-		"topics":[{"name":"bp-panel-validator"}],
+		"topics":[{"name":"bp-example-validator"}],
 		"runtime":{"localTools":["fhir-validator"]}
 	}`
 	res, err := http.Post(server.URL+"/apis/v1/namespaces/acme/workspaces", "application/json", strings.NewReader(createBody))
@@ -629,12 +629,19 @@ func TestManagerLocalToolsCatalogAndWorkspaceSelection(t *testing.T) {
 		t.Fatalf("expected local tool guidance to mention fhir-validator, got %q", string(content))
 	}
 
-	seededProfile, err := os.ReadFile(filepath.Join(launchSpec.WorkspaceDir, "input", "fsh", "BloodPressurePanel.fsh"))
+	seededPatient, err := os.ReadFile(filepath.Join(launchSpec.WorkspaceDir, "input", "examples", "Patient-bp-alice-smith.json"))
 	if err != nil {
-		t.Fatalf("failed to read seeded demo template profile: %v", err)
+		t.Fatalf("failed to read seeded demo patient example: %v", err)
 	}
-	if !strings.Contains(string(seededProfile), "component contains") {
-		t.Fatalf("expected seeded demo profile content, got %q", string(seededProfile))
+	if !strings.Contains(string(seededPatient), `"gender": "woman"`) {
+		t.Fatalf("expected seeded demo patient content, got %q", string(seededPatient))
+	}
+	seededObservation, err := os.ReadFile(filepath.Join(launchSpec.WorkspaceDir, "input", "examples", "Observation-bp-alice-morning.json"))
+	if err != nil {
+		t.Fatalf("failed to read seeded demo observation example: %v", err)
+	}
+	if !strings.Contains(string(seededObservation), `"effectiveDateTime": "2026-02-30T07:00:00Z"`) {
+		t.Fatalf("expected seeded demo observation content, got %q", string(seededObservation))
 	}
 }
 
@@ -645,10 +652,10 @@ func TestManagerRecoverPersistedWorkspaces(t *testing.T) {
 			io.WriteString(w, `{"status":"ok"}`)
 		case r.URL.Path == "/ws/topics" && r.Method == http.MethodPost:
 			w.WriteHeader(http.StatusCreated)
-			io.WriteString(w, `{"name":"bp-panel-validator"}`)
+			io.WriteString(w, `{"name":"bp-example-validator"}`)
 		case r.URL.Path == "/ws/topics":
 			w.Header().Set("Content-Type", "application/json")
-			io.WriteString(w, `[{"name":"bp-panel-validator","clients":0,"busy":false,"createdAt":"2026-03-10T00:00:00Z"}]`)
+			io.WriteString(w, `[{"name":"bp-example-validator","clients":0,"busy":false,"createdAt":"2026-03-10T00:00:00Z"}]`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -682,7 +689,7 @@ func TestManagerRecoverPersistedWorkspaces(t *testing.T) {
 	}
 	serverA := httptest.NewServer(mgrA)
 
-	createBody := `{"name":"bp-ig-fix","template":"acme-rpm-ig","topics":[{"name":"bp-panel-validator"}],"runtime":{"localTools":["fhir-validator"]}}`
+	createBody := `{"name":"bp-ig-fix","template":"acme-rpm-ig","topics":[{"name":"bp-example-validator"}],"runtime":{"localTools":["fhir-validator"]}}`
 	createRes, err := http.Post(serverA.URL+"/apis/v1/namespaces/acme/workspaces", "application/json", strings.NewReader(createBody))
 	if err != nil {
 		t.Fatal(err)
@@ -757,10 +764,10 @@ func TestManagerUIRoutes(t *testing.T) {
 			io.WriteString(w, `{"status":"ok"}`)
 		case r.URL.Path == "/ws/topics" && r.Method == http.MethodPost:
 			w.WriteHeader(http.StatusCreated)
-			io.WriteString(w, `{"name":"bp-panel-validator"}`)
+			io.WriteString(w, `{"name":"bp-example-validator"}`)
 		case r.URL.Path == "/ws/topics":
 			w.Header().Set("Content-Type", "application/json")
-			io.WriteString(w, `[{"name":"bp-panel-validator","clients":0,"busy":false,"createdAt":"2026-03-10T00:00:00Z"}]`)
+			io.WriteString(w, `[{"name":"bp-example-validator","clients":0,"busy":false,"createdAt":"2026-03-10T00:00:00Z"}]`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -823,7 +830,7 @@ func TestManagerUIRoutes(t *testing.T) {
 		t.Fatalf("expected ws language guide to include concrete demo commands, got %s", guideBody)
 	}
 
-	createRes, err := http.Post(server.URL+"/apis/v1/namespaces/acme/workspaces", "application/json", strings.NewReader(`{"name":"bp-ig-fix","topics":[{"name":"bp-panel-validator"}]}`))
+	createRes, err := http.Post(server.URL+"/apis/v1/namespaces/acme/workspaces", "application/json", strings.NewReader(`{"name":"bp-ig-fix","topics":[{"name":"bp-example-validator"}]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -832,13 +839,13 @@ func TestManagerUIRoutes(t *testing.T) {
 		t.Fatalf("create status = %d", createRes.StatusCode)
 	}
 
-	appRes, err := http.Get(server.URL + "/app/acme/bp-ig-fix/bp-panel-validator")
+	appRes, err := http.Get(server.URL + "/app/acme/bp-ig-fix/bp-example-validator")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer appRes.Body.Close()
 	appBody, _ := io.ReadAll(appRes.Body)
-	if !strings.Contains(string(appBody), "WS_MANAGER") || !strings.Contains(string(appBody), "/acp/acme/bp-ig-fix/topics/bp-panel-validator") {
+	if !strings.Contains(string(appBody), "WS_MANAGER") || !strings.Contains(string(appBody), "/acp/acme/bp-ig-fix/topics/bp-example-validator") {
 		t.Fatalf("unexpected app page body: %s", appBody)
 	}
 	if !strings.Contains(string(appBody), "Connecting...") || !strings.Contains(string(appBody), "Realtime connection failed") {
@@ -856,8 +863,8 @@ func TestManagerUIRoutes(t *testing.T) {
 	if !strings.Contains(string(appBody), ".msg-body { white-space: pre-wrap; }") {
 		t.Fatalf("expected app page body to preserve multiline message rendering, got %s", appBody)
 	}
-	if !strings.Contains(string(appBody), "history.scrollRestoration = 'manual'") || !strings.Contains(string(appBody), "window.scrollTo(0, 0)") {
-		t.Fatalf("expected app page body to disable animated/implicit scroll restoration, got %s", appBody)
+	if !strings.Contains(string(appBody), "history.scrollRestoration = 'manual'") || !strings.Contains(string(appBody), "scheduleInitialScrollToLatest()") || !strings.Contains(string(appBody), "window.scrollTo(0, document.documentElement.scrollHeight)") {
+		t.Fatalf("expected app page body to disable animated/implicit scroll restoration and jump instantly to latest content, got %s", appBody)
 	}
 	if strings.Contains(string(appBody), "Refresh Queue") {
 		t.Fatalf("expected app page body to avoid a manual refresh queue button, got %s", appBody)

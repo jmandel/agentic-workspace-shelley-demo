@@ -196,6 +196,8 @@ func (l CommandLauncher) buildDockerCommand(spec LaunchSpec, hostPort int) (*exe
 	}
 	containerState := "/state"
 	containerWorkspace := "/workspace"
+	containerHome := filepath.ToSlash(filepath.Join(containerState, "home"))
+	containerTmp := filepath.ToSlash(filepath.Join(containerState, "tmp"))
 	containerName := "shelley-" + spec.Namespace + "-" + spec.Name
 	args := []string{
 		"run", "--rm", "--init",
@@ -203,6 +205,9 @@ func (l CommandLauncher) buildDockerCommand(spec LaunchSpec, hostPort int) (*exe
 		"-p", fmt.Sprintf("127.0.0.1:%d:%d", hostPort, hostPort),
 		"-e", "WORKSPACE_NAME=" + spec.Name,
 		"-e", "PATH=" + prependPath(filepath.ToSlash(filepath.Join(runtimeSharedToolsDir, "bin")), os.Getenv("PATH")),
+		"-e", "HOME="+containerHome,
+		"-e", "TMPDIR="+containerTmp,
+		"-e", "JAVA_TOOL_OPTIONS="+javaToolOptions(containerHome, os.Getenv("JAVA_TOOL_OPTIONS")),
 		"-v", spec.StateDir + ":" + containerState,
 		"-v", spec.WorkspaceDir + ":" + containerWorkspace,
 		"-v", filepath.Join(spec.StateDir, "tools") + ":" + runtimeSharedToolsDir,
@@ -248,6 +253,7 @@ func (l CommandLauncher) buildBwrapCommand(spec LaunchSpec, hostPort int) (*exec
 		"--setenv", "WORKSPACE_NAME", spec.Name,
 		"--setenv", "HOME", bwrapSandboxHome,
 		"--setenv", "TMPDIR", "/tmp",
+		"--setenv", "JAVA_TOOL_OPTIONS", javaToolOptions(bwrapSandboxHome, os.Getenv("JAVA_TOOL_OPTIONS")),
 		"--setenv", "WORKSPACE_TOOLS_DIR", runtimeSharedToolsDir,
 		"--setenv", "PATH", prependPath(filepath.ToSlash(filepath.Join(runtimeSharedToolsDir, "bin")), os.Getenv("PATH")),
 	)
@@ -443,10 +449,17 @@ func (l CommandLauncher) runtimeEnv(base []string, spec LaunchSpec, sandboxed bo
 	env := append([]string{}, base...)
 	env = append(env, "WORKSPACE_NAME="+spec.Name)
 	toolsDir := filepath.Join(spec.StateDir, "tools")
+	homeDir := filepath.Join(spec.StateDir, "home")
+	tmpDir := filepath.Join(spec.StateDir, "tmp")
 	if sandboxed {
 		toolsDir = runtimeSharedToolsDir
+		homeDir = bwrapSandboxHome
+		tmpDir = "/tmp"
 	}
 	env = append(env, "WORKSPACE_TOOLS_DIR="+toolsDir)
+	env = append(env, "HOME="+homeDir)
+	env = append(env, "TMPDIR="+tmpDir)
+	env = append(env, "JAVA_TOOL_OPTIONS="+javaToolOptions(homeDir, os.Getenv("JAVA_TOOL_OPTIONS")))
 	pathValue := prependPath(filepath.ToSlash(filepath.Join(toolsDir, "bin")), os.Getenv("PATH"))
 	return append(env, "PATH="+pathValue)
 }
@@ -519,4 +532,16 @@ func prependPath(dir, current string) string {
 		return dir
 	}
 	return dir + string(os.PathListSeparator) + current
+}
+
+func javaToolOptions(homeDir, current string) string {
+	current = strings.TrimSpace(current)
+	if strings.Contains(current, "-Duser.home=") {
+		return current
+	}
+	override := "-Duser.home=" + strings.TrimSpace(homeDir)
+	if current == "" {
+		return override
+	}
+	return current + " " + override
 }

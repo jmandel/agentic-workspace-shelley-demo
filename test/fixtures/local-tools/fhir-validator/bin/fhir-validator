@@ -1,27 +1,41 @@
 #!/bin/sh
 set -eu
 
-target="${1:-input/fsh/BloodPressurePanel.fsh}"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+TOOL_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
+JAR_PATH="$TOOL_ROOT/validator_cli.jar"
 
-if [ ! -f "$target" ]; then
-  printf 'FHIR Validator 6.5.0 (demo fixture)\n'
-  printf 'Error: %s not found\n' "$target"
+if [ ! -f "$JAR_PATH" ]; then
+  printf 'FHIR validator bundle is incomplete: %s is missing\n' "$JAR_PATH" >&2
   exit 2
 fi
 
-if grep -q 'component \^slicing\.discriminator\[0\]\.type = #pattern' "$target" \
-  && grep -q 'component \^slicing\.discriminator\[0\]\.path = "code"' "$target" \
-  && grep -q 'component \^slicing\.rules = #open' "$target"; then
-  printf 'FHIR Validator 6.5.0 (demo fixture)\n'
-  printf 'Success: %s\n' "$target"
-  printf 'No errors, 0 warnings\n'
-  exit 0
+set -- "$@"
+needs_version=1
+needs_tx=1
+showing_help=0
+
+for arg in "$@"; do
+  case "$arg" in
+    -version|--version)
+      needs_version=0
+      ;;
+    -tx)
+      needs_tx=0
+      ;;
+    -help|--help|-h)
+      showing_help=1
+      ;;
+  esac
+done
+
+if [ "$showing_help" -eq 0 ]; then
+  if [ "$needs_version" -eq 1 ]; then
+    set -- "$@" -version 4.0.1
+  fi
+  if [ "$needs_tx" -eq 1 ]; then
+    set -- "$@" -tx n/a
+  fi
 fi
 
-printf 'FHIR Validator 6.5.0 (demo fixture)\n'
-printf 'Error @ StructureDefinition.differential.element[Observation.component]: Slices on Observation.component require slicing.discriminator and slicing.rules\n'
-printf 'Hint: add:\n'
-printf '* component ^slicing.discriminator[0].type = #pattern\n'
-printf '* component ^slicing.discriminator[0].path = "code"\n'
-printf '* component ^slicing.rules = #open\n'
-exit 1
+exec java -jar "$JAR_PATH" "$@"

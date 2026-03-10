@@ -1,12 +1,21 @@
 [
   {
     "name": "fhir-validator",
-    "description": "Demo FHIR validator wrapper for the blood pressure panel workspace.",
-    "guidance": "Use `fhir-validator input/fsh/BloodPressurePanel.fsh` through bash. The demo fixture reports the missing Observation.component slicing metadata until the profile is fixed.",
+    "version": "6.8.2",
+    "description": "Real FHIR Validator CLI wrapper for validating example JSON resources in the blood pressure workspace.",
+    "guidance": "Use `fhir-validator input/examples/Patient-bp-alice-smith.json input/examples/Observation-bp-alice-morning.json` through bash. The wrapper runs the real validator JAR with `-version 4.0.1 -tx n/a` by default.",
+    "requirements": ["java"],
     "root": "fhir-validator",
     "commands": [
       {
         "name": "fhir-validator"
+      }
+    ],
+    "artifacts": [
+      {
+        "url": "https://github.com/hapifhir/org.hl7.fhir.core/releases/download/6.8.2/validator_cli.jar",
+        "relativePath": "validator_cli.jar",
+        "sha256": "b7e3de5494c6ea18e753942c1dea1aa37e6fa2b47ea30cfc046dc5b707104868"
       }
     ]
   }

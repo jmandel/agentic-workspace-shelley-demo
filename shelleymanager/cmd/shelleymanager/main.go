@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -74,7 +75,12 @@ func main() {
 		DebugRuntime:    cfg.Debug,
 	}
 
-	localTools, err := manager.LoadLocalToolsCatalog(cfg.SharedToolsDir, cfg.LocalToolsCatalog)
+	cacheBase, err := os.UserCacheDir()
+	if err != nil {
+		cacheBase = filepath.Join(cfg.StateDir, ".cache")
+	}
+	localToolsCache := filepath.Join(cacheBase, "shelleymanager", "local-tools")
+	localTools, err := manager.LoadLocalToolsCatalog(cfg.SharedToolsDir, cfg.LocalToolsCatalog, localToolsCache)
 	if err != nil {
 		logger.Error("failed to load local tools catalog", "tools_dir", cfg.SharedToolsDir, "catalog", cfg.LocalToolsCatalog, "error", err)
 		os.Exit(1)

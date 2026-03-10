@@ -74,7 +74,7 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
           <input id="workspace-name" name="name" value="bp-ig-fix" required>
 
           <label for="topic-name">Initial Topic</label>
-          <input id="topic-name" name="topic" value="bp-panel-validator" required>
+          <input id="topic-name" name="topic" value="bp-example-validator" required>
 
           <label for="template">Template / Repo Label</label>
           <input id="template" name="template" value="acme-rpm-ig">
@@ -201,7 +201,7 @@ var homeTemplate = template.Must(template.New("home").Parse(`<!doctype html>
     function workspaceCard(ws) {
       const wsNamespace = ws.namespace || namespace;
       const topics = Array.isArray(ws.topics) ? ws.topics : [];
-      const defaultTopic = (topics[0] && topics[0].name) || 'bp-panel-validator';
+      const defaultTopic = (topics[0] && topics[0].name) || 'bp-example-validator';
       const cli = 'WS_MANAGER=' + window.location.origin + ' bun run cli.ts connect ' + ws.name + ' ' + defaultTopic;
       const localTools = ws.runtime && ws.runtime.localTools ? ws.runtime.localTools.map(t => '<code>' + escapeHTML(t.name) + '</code>').join(', ') : '<span class="muted">none</span>';
       const topicList = topics.length > 0
@@ -538,7 +538,6 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
     if ('scrollRestoration' in history) {
       history.scrollRestoration = 'manual';
     }
-    window.scrollTo(0, 0);
 
     const messagesEl = document.getElementById('messages');
     const statusEl = document.getElementById('status');
@@ -577,6 +576,8 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
     let promptCounter = 0;
     let queueRefreshTimer = null;
     let queueState = { activePromptId: '', entries: [] };
+    let initialHydration = true;
+    let hydrationScrollTimer = null;
 
     function requestHeaders(extra) {
       return Object.assign({'X-Workspace-Client-ID': participantId}, extra || {});
@@ -607,6 +608,19 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
       div.appendChild(meta);
       div.appendChild(content);
       messagesEl.appendChild(div);
+      scheduleInitialScrollToLatest();
+    }
+
+    function scheduleInitialScrollToLatest() {
+      if (!initialHydration) return;
+      if (hydrationScrollTimer !== null) {
+        window.clearTimeout(hydrationScrollTimer);
+      }
+      hydrationScrollTimer = window.setTimeout(() => {
+        hydrationScrollTimer = null;
+        initialHydration = false;
+        window.scrollTo(0, document.documentElement.scrollHeight);
+      }, 120);
     }
 
     function showConnectionFailure(message) {
@@ -630,6 +644,7 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
     function applyQueueSnapshot(snapshot) {
       queueState = normalizeQueueSnapshot(snapshot);
       renderQueue();
+      scheduleInitialScrollToLatest();
     }
 
     function renderQueue() {
@@ -1021,36 +1036,51 @@ var wsLanguageTemplate = template.Must(template.New("ws-language").Parse(`<!doct
     <section class="card">
       <h2>Demo-Ready Examples</h2>
       <pre>ws text "Thanks. Let me summarize the validator findings."</pre>
-      <pre>ws pause2 validator "input/fsh/BloodPressurePanel.fsh" toolpause3 aftertext "The validator is pointing at missing slicing metadata on Observation.component."</pre>
-      <pre>ws jira "Observation.component slicing validator failure" pause1</pre>
-      <pre>ws tool hl7-jira action jira.search input '{"query":"validator warning blood pressure slicing"}' aftertext "I found two relevant HL7 Jira threads."</pre>
-      <pre>ws bash "sed -n '1,160p' input/fsh/BloodPressurePanel.fsh"</pre>
+      <pre>ws pause2 validator "input/examples/Patient-bp-alice-smith.json input/examples/Observation-bp-alice-morning.json" toolpause3 aftertext "The validator found bad patient demographics and a broken blood pressure example."</pre>
+      <pre>ws jira "FHIR validator example errors invalid dates bad codes blood pressure" pause1</pre>
+      <pre>ws tool hl7-jira action jira.search input '{"query":"validator error handling bad codes invalid dates"}' aftertext "I found two relevant HL7 Jira threads."</pre>
+      <pre>ws bash "sed -n '1,180p' input/examples/Patient-bp-alice-smith.json && printf '\n---\n' && sed -n '1,240p' input/examples/Observation-bp-alice-morning.json"</pre>
     </section>
 
     <section class="card">
       <h2>Whole Demo Commands</h2>
-      <pre>1. ws validator "input/fsh/BloodPressurePanel.fsh" toolpause5 aftertext "The validator is pointing at missing slicing metadata on Observation.component."
-2. ws jira "Observation.component slicing validator failure" pause1
-3. ws bash "sed -n '1,200p' input/fsh/BloodPressurePanel.fsh"
-4. ws bash "python - &lt;&lt;'PY'
+      <pre>1. ws validator "input/examples/Patient-bp-alice-smith.json input/examples/Observation-bp-alice-morning.json" toolpause5 aftertext "The validator found bad patient demographics and a broken blood pressure example."
+2. ws jira "FHIR validator example errors invalid dates bad codes blood pressure" pause1
+3. ws bash "sed -n '1,180p' input/examples/Patient-bp-alice-smith.json && printf '\n---\n' && sed -n '1,240p' input/examples/Observation-bp-alice-morning.json"
+4. ws bash "python3 - &lt;&lt;'PY'
+import json
 from pathlib import Path
-path = Path('input/fsh/BloodPressurePanel.fsh')
-text = path.read_text()
-needle = '* component contains\n'
-insert = '* component ^slicing.discriminator[0].type = #pattern\n* component ^slicing.discriminator[0].path = \"code\"\n* component ^slicing.rules = #open\n'
-if insert not in text:
-    text = text.replace(needle, insert + needle, 1)
-path.write_text(text)
-print('Inserted slicing metadata.')
+
+patient_path = Path('input/examples/Patient-bp-alice-smith.json')
+patient = json.loads(patient_path.read_text())
+patient['gender'] = 'female'
+patient['birthDate'] = '1974-12-25'
+patient_path.write_text(json.dumps(patient, indent=2) + '\n')
+
+obs_path = Path('input/examples/Observation-bp-alice-morning.json')
+observation = json.loads(obs_path.read_text())
+observation['effectiveDateTime'] = '2026-02-28T07:00:00Z'
+observation['component'] = [
+  {
+    'code': {'coding': [{'system': 'http://loinc.org', 'code': '8480-6', 'display': 'Systolic blood pressure'}]},
+    'valueQuantity': {'value': 126, 'unit': 'mmHg', 'system': 'http://unitsofmeasure.org', 'code': 'mm[Hg]'}
+  },
+  {
+    'code': {'coding': [{'system': 'http://loinc.org', 'code': '8462-4', 'display': 'Diastolic blood pressure'}]},
+    'valueQuantity': {'value': 78, 'unit': 'mmHg', 'system': 'http://unitsofmeasure.org', 'code': 'mm[Hg]'}
+  }
+]
+obs_path.write_text(json.dumps(observation, indent=2) + '\n')
+print('Updated both example resources.')
 PY"
-5. ws validator "input/fsh/BloodPressurePanel.fsh" aftertext "Validation now passes the slicing step."
-6. ws text "Marco, can you review the updated profile before we publish the preview?"</pre>
+5. ws validator "input/examples/Patient-bp-alice-smith.json input/examples/Observation-bp-alice-morning.json" aftertext "The hard validator errors are gone. Only expected warnings remain without a terminology server."
+6. ws text "Marco, can you review the updated example resources before we publish the preview?"</pre>
     </section>
 
     <section class="card">
       <h2>Queueing Trick</h2>
       <p>To show queueing live in the demo, make the current turn visibly slow at the exact point you want:</p>
-      <pre>ws validator "input/fsh/BloodPressurePanel.fsh" toolpause5 aftertext "Validator run finished."</pre>
+      <pre>ws validator "input/examples/Patient-bp-alice-smith.json input/examples/Observation-bp-alice-morning.json" toolpause5 aftertext "Validator run finished."</pre>
       <p class="muted">While that five-second validator step is running, submit another prompt from the browser or CLI. The second prompt will queue, and the queue panel will let you edit, reorder, move to top/bottom, or delete it before it runs.</p>
     </section>
 

@@ -9,7 +9,7 @@ MANAGER_PORT_FILE="$TMPDIR/manager-port"
 MANAGER_NAMESPACE="acme"
 RUNTIME_MODE="${SMOKE_RUNTIME_MODE:-process}"
 WORKSPACE_NAME="bp-ig-fix"
-TOPIC_NAME="bp-panel-validator"
+TOPIC_NAME="bp-example-validator"
 TEMPLATE_NAME="acme-rpm-ig"
 FILE_DIR=".workspace-smoke-$RANDOM"
 FILE_PATH="$FILE_DIR/note.txt"
@@ -56,14 +56,14 @@ require_output() {
 
 wait_for_http() {
   local url="$1"
-  timeout 20 bash -c 'until curl -sf "$1" >/dev/null; do :; done' _ "$url"
+  timeout 60 bash -c 'until curl -sf "$1" >/dev/null; do :; done' _ "$url"
 }
 
 read_cli_until() {
   local needle="$1"
   local label="$2"
   local line
-  local deadline=$((SECONDS + 20))
+  local deadline=$((SECONDS + 60))
 
   while (( SECONDS < deadline )); do
     if IFS= read -r -t 1 line <&4; then
@@ -196,8 +196,10 @@ if command -v chromium >/dev/null 2>&1; then
   require_output "$APP_DOM" "Participant Name" "topic web UI renders participant naming controls in the browser"
 fi
 
-PROFILE_CONTENT="$(cat "$WORKSPACE_ROOT/input/fsh/BloodPressurePanel.fsh")"
-require_output "$PROFILE_CONTENT" "component contains" "workspace creation seeds the demo blood pressure profile"
+PATIENT_CONTENT="$(cat "$WORKSPACE_ROOT/input/examples/Patient-bp-alice-smith.json")"
+require_output "$PATIENT_CONTENT" '"gender": "woman"' "workspace creation seeds the broken patient example"
+OBS_CONTENT="$(cat "$WORKSPACE_ROOT/input/examples/Observation-bp-alice-morning.json")"
+require_output "$OBS_CONTENT" '"effectiveDateTime": "2026-02-30T07:00:00Z"' "workspace creation seeds the broken observation example"
 
 log "Checking manager-proxied workspace file endpoints"
 curl -sf -X PUT --data-binary 'workspace file body' "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/files/$FILE_PATH" >/dev/null
@@ -267,11 +269,12 @@ log "Running real Bun CLI against shelleymanager"
   exec 4<&"${CLI1[0]}"
 
   read_cli_until "Connected to topic" "cli.ts connected via /workspaces discovery"
-  printf '%s\n' 'bash: fhir-validator input/fsh/BloodPressurePanel.fsh' >&3
+  printf '%s\n' 'bash: fhir-validator input/examples/Patient-bp-alice-smith.json input/examples/Observation-bp-alice-morning.json' >&3
   read_cli_until "thinking..." "cli.ts saw live workspace system update"
   read_cli_until "[tool]" "cli.ts saw the validator bash tool invocation"
-  read_cli_until "FHIR Validator 6.5.0" "cli.ts received validator output"
-  read_cli_until "Observation.component" "validator output explains the missing slicing metadata"
+  read_cli_until "FHIR Validation tool Version" "cli.ts received real validator output"
+  read_cli_until "Patient.gender" "validator output includes the patient validation detail"
+  read_cli_until "Observation.component" "validator output includes the blood pressure component detail"
   printf '/quit\n' >&3
   read_cli_until "Disconnected." "first cli session disconnected cleanly"
   exec 3>&-
@@ -282,7 +285,8 @@ log "Running real Bun CLI against shelleymanager"
   exec 4<&"${CLI2[0]}"
 
   read_cli_until "Connected to topic" "second cli session connected"
-  read_cli_until "FHIR Validator 6.5.0" "late join replay includes prior validator output"
+  read_cli_until "FHIR Validation tool Version" "late join replay includes prior validator output"
+  read_cli_until "Patient.gender" "late join replay includes the patient validation detail"
   read_cli_until "Observation.component" "late join replay includes the validator failure detail"
   printf '%s\n' 'workspace_tool_json: hl7-jira jira.search {"query":"validation error handling"}' >&3
   read_cli_until "FHIR-53953" "cli.ts received the Jira MCP search result"
@@ -316,7 +320,7 @@ QUEUE_WS_OUTPUT="$(
     const ws = new WebSocket("ws://127.0.0.1:'"$PORT"'/acp/'"$MANAGER_NAMESPACE"'/'"$WORKSPACE_NAME"'/topics/'"$TOPIC_NAME"'?client_id=queue-smoke");
     const seen = [];
     ws.onopen = () => {
-      ws.send(JSON.stringify({ type: "prompt", promptId: "p-smoke-1", data: "ws validator \"input/fsh/BloodPressurePanel.fsh\" toolpause3 aftertext \"validator finished\"" }));
+      ws.send(JSON.stringify({ type: "prompt", promptId: "p-smoke-1", data: "ws validator \"input/examples/Patient-bp-alice-smith.json input/examples/Observation-bp-alice-morning.json\" toolpause3 aftertext \"validator finished\"" }));
       ws.send(JSON.stringify({ type: "prompt", promptId: "p-smoke-2", data: "ws text \"smoke queue second\"" }));
       ws.send(JSON.stringify({ type: "prompt", promptId: "p-smoke-3", data: "ws text \"smoke queue third\"" }));
     };

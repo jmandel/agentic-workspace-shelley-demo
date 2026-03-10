@@ -1,17 +1,17 @@
-# Demo Run Of Show: Fixing the Blood Pressure Panel in the Acme RPM IG
+# Demo Run Of Show: Fixing Broken Blood Pressure Example Resources
 
 ## Demo Goal
 
 Show one believable collaborative standards workflow:
 
 - Priya creates a fresh isolated workspace through Shelley Manager.
-- She opens a shared topic in the browser and asks Shelley to debug a FHIR
-  validator failure.
-- Shelley uses a trusted local runtime tool to run the FHIR Validator JAR inside the
-  workspace.
+- She opens a shared topic in the browser and asks Shelley to validate two
+  broken example resources from the IG.
+- Shelley uses a trusted local runtime tool to run the real FHIR Validator JAR
+  inside the workspace.
 - Marco joins late from the CLI, catches up to the in-progress topic, and asks
   Shelley to search related HL7 Jira issues through an MCP stdio tool.
-- Shelley edits the profile and re-runs validation.
+- Shelley fixes the example JSON files and re-runs validation.
 
 This should feel like a real standards-team debugging session, not a synthetic
 "agent does generic task" demo.
@@ -37,17 +37,23 @@ This should feel like a real standards-team debugging session, not a synthetic
 The team is working on the fictional but plausible `acme-rpm-ig` repository:
 
 - name: `Acme Remote Patient Monitoring Implementation Guide`
-- focus area for this demo: home blood pressure observations
-- current release pressure: they want a preview build ready for tomorrow's
-  work group review
+- focus area for this demo: home blood pressure readings
+- current release pressure: they want a preview build ready for tomorrow's work
+  group review
 
-The concrete bug is in the blood pressure panel profile:
+The concrete bug is in two example resources that are supposed to appear in the
+guide:
 
-- file: `input/fsh/BloodPressurePanel.fsh`
-- generated artifact:
-  `fsh-generated/resources/StructureDefinition-acme-bp-panel.json`
-- symptom: the validator complains that the profile constrains systolic and
-  diastolic `Observation.component` slices without declaring slicing metadata
+- `input/examples/Patient-bp-alice-smith.json`
+- `input/examples/Observation-bp-alice-morning.json`
+
+These files are realistic things the validator can actually help with:
+
+- the Patient example uses an invalid administrative gender code
+- the Patient example has an invalid birth date
+- the Observation example has an invalid `effectiveDateTime`
+- the Observation example is missing the systolic and diastolic components
+  required for a blood pressure panel
 
 ## Fixed Demo Data
 
@@ -56,7 +62,7 @@ Use these exact demo values every time.
 - workspace name: `bp-ig-fix`
 - namespace: `acme`
 - repo/template label in the create form: `acme-rpm-ig`
-- topic name: `bp-panel-validator`
+- topic name: `bp-example-validator`
 
 ## Tool Model In This Demo
 
@@ -154,7 +160,7 @@ Content-Type: application/json
   "name": "bp-ig-fix",
   "template": "acme-rpm-ig",
   "topics": [
-    { "name": "bp-panel-validator" }
+    { "name": "bp-example-validator" }
   ],
   "runtime": {
     "localTools": ["fhir-validator"]
@@ -171,11 +177,6 @@ Meaning:
 - the manager should also write workspace guidance so Shelley knows that
   `fhir-validator` is available through bash at a known path such as
   `/tools/bin/fhir-validator`
-
-Optional extension:
-
-- add `"ig-publisher"` to the same `runtime.localTools` list if we want the
-  second-act publisher check
 
 ### 2. Write the Bun MCP fixture into the workspace
 
@@ -233,13 +234,6 @@ Content-Type: application/json
 }
 ```
 
-Meaning:
-
-- this is the first-class workspace tool path
-- `hl7-jira` should show up to Shelley as a managed `workspace_*` tool
-- stdio MCP runs inside the bubblewrapped workspace runtime
-- in this demo, the executable is `bun` and the script lives in `.demo/`
-
 ### 4. Grant the agent access to the MCP tool
 
 This is also a workspace runtime API call, exposed through the manager.
@@ -262,41 +256,15 @@ Meaning:
 - the agent can use `jira.search` without per-call approval
 - this is the only tool grant needed for the mainline demo
 
-### What Is Not Called In The Mainline Demo
-
-These should not be set up through `POST /tools` for the main demo:
-
-- `fhir-validator`
-- optional `ig-publisher`
-
-Reason:
-
-- they are trusted local runtime capabilities, not managed workspace API tools
-- Shelley should use them through bash based on workspace guidance, not through
-  the first-class MCP tool path
-
-### Optional Approval Extension
-
-If we later do a separate approval-focused extension, then a tool like
-`publish-preview` should be added through the tools API and granted separately.
-
-That flow would be:
-
-1. `POST /apis/v1/namespaces/acme/workspaces/bp-ig-fix/tools`
-2. `POST /apis/v1/namespaces/acme/workspaces/bp-ig-fix/tools/publish-preview/grants`
-
-with `access: "approval_required"`.
-
 ## Tools In The Demo
 
 ### `fhir-validator`
 
 - kind: trusted local runtime tool
 - access pattern: Shelley reaches it through bash inside the workspace runtime
-- implementation: wrapper script around the FHIR Validator JAR already present
-  in the shared tools mount
-- purpose: run IG validation and show concrete output against the generated
-  StructureDefinition
+- implementation: wrapper script around the real FHIR Validator JAR
+- purpose: validate example JSON resources directly and surface real validator
+  diagnostics
 
 ### `hl7-jira`
 
@@ -315,57 +283,87 @@ Fixture results should include:
 - `FHIR-53960`
   - title: `Additional Functions - Inconsistent error handling patterns`
 
-### `ig-publisher` (optional extension)
-
-- kind: trusted local runtime tool
-- access pattern: Shelley reaches it through bash inside the workspace runtime
-- purpose: optional second-act proof that approved local tooling can be used
-  without going through MCP
-
 ## Starting Files
 
-At demo start, `input/fsh/BloodPressurePanel.fsh` should look roughly like:
+At demo start, the example resources should look roughly like this.
 
-```fsh
-Profile: AcmeBloodPressurePanel
-Parent: Observation
-Id: acme-bp-panel
-Title: "Acme Blood Pressure Panel"
-Description: "Panel profile for home blood pressure readings."
+### `input/examples/Patient-bp-alice-smith.json`
 
-* status 1..1
-* code = $LNC#85354-9 "Blood pressure panel with all children optional"
-* subject 1..1
-* effective[x] only dateTime
-* component[systolic] 1..1
-* component[systolic].code = $LNC#8480-6 "Systolic blood pressure"
-* component[systolic].value[x] only Quantity
-* component[diastolic] 1..1
-* component[diastolic].code = $LNC#8462-4 "Diastolic blood pressure"
-* component[diastolic].value[x] only Quantity
+```json
+{
+  "resourceType": "Patient",
+  "id": "alice-smith",
+  "active": true,
+  "name": [
+    {
+      "family": "Smith",
+      "given": ["Alice"]
+    }
+  ],
+  "gender": "woman",
+  "birthDate": "1974-25-12"
+}
 ```
 
-The important problem is that this constrains named slices, but does not
-declare slicing on `component`.
+### `input/examples/Observation-bp-alice-morning.json`
+
+```json
+{
+  "resourceType": "Observation",
+  "id": "bp-alice-morning",
+  "status": "final",
+  "category": [
+    {
+      "coding": [
+        {
+          "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+          "code": "vital-signs"
+        }
+      ]
+    }
+  ],
+  "code": {
+    "coding": [
+      {
+        "system": "http://loinc.org",
+        "code": "85354-9",
+        "display": "Blood pressure panel with all children optional"
+      }
+    ]
+  },
+  "subject": {
+    "reference": "Patient/alice-smith"
+  },
+  "effectiveDateTime": "2026-02-30T07:00:00Z"
+}
+```
+
+These are exactly the sort of problems the real validator can help with.
 
 ## Representative Validator Output
 
-The validator output does not need to be byte-for-byte real, but it should be
-specific and clinically plausible. Use something in this shape:
+The validator output should be recognizably real and close to what the official
+CLI emits.
 
 ```text
-[ERROR] StructureDefinition/acme-bp-panel: Observation.component:
-Slicing cannot be evaluated. The profile defines component[systolic] and
-component[diastolic], but no slicing discriminator is declared on
-Observation.component.
+*FAILURE*: 3 errors, 1 warnings, 0 notes
+Error @ Patient.gender: The value provided ('woman') was not found in the value set 'AdministrativeGender'
+Error @ Patient.birthDate: Not a valid date format: '1974-25-12'
+
+*FAILURE*: 5 errors, 2 warnings, 2 notes
+Error @ Observation.effective.ofType(dateTime): Not a valid date format: '2026-02-30T07:00:00Z'
+Error @ Observation: Observation.component: minimum required = 2, but only found 0
+Error @ Observation: Slice 'Observation.component:SystolicBP' was not found
+Error @ Observation: Slice 'Observation.component:DiastolicBP' was not found
+Error @ Observation: Constraint failed: vs-2
 ```
 
 Shelley should summarize this in plain language:
 
-> The profile is constraining systolic and diastolic components, but the
-> generated StructureDefinition does not declare how those slices are
-> discriminated. I should inspect `input/fsh/BloodPressurePanel.fsh` and add
-> slicing metadata on `component`.
+> The validator is finding real example-data problems, not profile-compiler
+> issues. The Patient example uses a non-FHIR gender code and an invalid birth
+> date, and the Observation example has an impossible `effectiveDateTime` plus
+> missing blood-pressure components.
 
 ## Run Of Show
 
@@ -382,14 +380,13 @@ She clicks `Create Workspace`.
 The page should show:
 
 - status: `running`
-- `Open Workspace` button
 - share card with:
   - browser URL:
     `https://demo.example.org/apis/v1/namespaces/acme/workspaces/bp-ig-fix`
   - CLI join command:
 
 ```bash
-WS_MANAGER=https://demo.example.org bun run cli.ts connect bp-ig-fix bp-panel-validator
+WS_MANAGER=https://demo.example.org bun run cli.ts connect bp-ig-fix bp-example-validator
 ```
 
 Presenter line:
@@ -400,11 +397,11 @@ Presenter line:
 
 ### 2. Priya opens the shared topic in the browser
 
-Priya clicks `Open Workspace`, then opens topic `bp-panel-validator`.
+Priya opens topic `bp-example-validator`.
 
 Her first prompt is exactly:
 
-> Run the FHIR validator on this IG and explain why the blood pressure panel is failing.
+> Run the FHIR validator on `input/examples/Patient-bp-alice-smith.json` and `input/examples/Observation-bp-alice-morning.json`, then explain what is broken.
 
 The audience should understand:
 
@@ -412,16 +409,19 @@ The audience should understand:
 - the browser is still talking through Shelley Manager
 - topic state lives inside this one workspace runtime
 
-### 3. Shelley runs the validator and finds the actual bug
+### 3. Shelley runs the validator and finds the actual bugs
 
 Shelley invokes `fhir-validator`.
 
 What the audience sees:
 
-- a tool call for `fhir-validator`
-- the concrete validator error above
-- Shelley's explanation that the issue is missing slicing metadata on
-  `Observation.component`
+- a real tool call for `fhir-validator`
+- concrete validator errors about:
+  - invalid administrative gender code
+  - invalid birth date
+  - invalid observation effective date/time
+  - missing systolic and diastolic blood pressure components
+- Shelley's explanation that the examples need data cleanup before publication
 
 Presenter line:
 
@@ -437,7 +437,7 @@ Marco arrives after the validator has already run.
 He uses the share command:
 
 ```bash
-WS_MANAGER=https://demo.example.org bun run cli.ts connect bp-ig-fix bp-panel-validator
+WS_MANAGER=https://demo.example.org bun run cli.ts connect bp-ig-fix bp-example-validator
 ```
 
 What Marco should see immediately:
@@ -445,7 +445,7 @@ What Marco should see immediately:
 - the current topic connection
 - replay of the recent topic events from the active session
 - the validator tool call
-- the validator error
+- the validator errors
 - Shelley's current summary of the problem
 
 Presenter line:
@@ -458,7 +458,7 @@ Presenter line:
 
 Marco types this exact prompt in the CLI:
 
-> Search HL7 Jira for issues about Observation.component slicing and blood pressure profiles.
+> Search HL7 Jira for issues about validator error handling for bad codes and invalid dates in example resources.
 
 Shelley invokes the MCP stdio tool `hl7-jira`, specifically the MCP tool
 `jira.search`.
@@ -470,65 +470,47 @@ The fixture returns:
 
 Shelley summarizes:
 
-> The Jira issues reinforce that validator and FHIRPath error handling around
-> profile constraints is still a live discussion area. For this profile, the
-> direct fix is still to declare slicing on `component` with a discriminator on
-> `code` before constraining the systolic and diastolic slices.
+> The Jira results reinforce that validator error handling is still an active
+> topic, but the fixes for these examples are straightforward: use a valid
+> administrative gender code and correct the invalid date and dateTime fields.
 
-Presenter line:
-
-> This second tool is MCP over stdio. It runs inside the bubblewrapped runtime,
-> but the transport is still real: Shelley launches a Bun MCP server inside the
-> workspace, talks to it over stdio using the official MCP SDK, and exposes it
-> as a first-class workspace tool through the tools API.
-
-### 6. Priya asks Shelley to fix the profile and re-run validation
+### 6. Priya asks Shelley to fix the examples and re-run validation
 
 Priya types this exact prompt in the browser:
 
-> Update `input/fsh/BloodPressurePanel.fsh` to declare the systolic and diastolic component slices correctly, then run validation again.
+> Update those two example JSON files to use valid FHIR values, then run validation again.
 
-Shelley edits the profile so the audience can see the fix in recognizable FSH.
+Shelley edits:
 
-The key added lines should be:
-
-```fsh
-* component ^slicing.discriminator.type = #pattern
-* component ^slicing.discriminator.path = "code"
-* component ^slicing.rules = #open
-* component contains systolic 1..1 and diastolic 1..1
-```
+- `Patient-bp-alice-smith.json`
+  - `gender: "female"`
+  - `birthDate: "1974-12-25"`
+- `Observation-bp-alice-morning.json`
+  - `effectiveDateTime: "2026-02-28T07:00:00Z"`
+  - adds `component` entries for:
+    - systolic blood pressure (`8480-6`)
+    - diastolic blood pressure (`8462-4`)
 
 Shelley then re-runs `fhir-validator`.
 
 Expected result:
 
-- the slicing error disappears
-- Shelley reports that the blood pressure panel now validates cleanly, or with
-  only a minor warning unrelated to slicing
+- the hard errors disappear
+- the validator reports success or only the non-blocking `dom-6` warning
 
 Presenter line:
 
 > The important part here is not that the model free-styled a fix. It used the
-> validator, used the Jira tool for context, then made a concrete standards edit
-> in the workspace and verified it by running the validator again.
+> validator, used the Jira tool for context, then made concrete standards edits
+> in the workspace and verified them by running the validator again.
 
 ### 7. Shelley closes the debugging loop
 
 Shelley closes with:
 
-> The blood pressure panel slicing error is fixed, the profile validates, and
-> both participants stayed synchronized in the same workspace topic throughout
-> the debugging session.
-
-### Optional extension: run IG Publisher locally
-
-If there is extra time, Priya can ask:
-
-> Run the IG publisher and make sure the preview site still builds.
-
-This should be presented as another trusted local runtime tool, not as an MCP
-tool and not as an approval-gated tool.
+> The example resources now validate cleanly enough for review, and both
+> participants stayed synchronized in the same workspace topic throughout the
+> debugging session.
 
 ## What This Demo Proves
 
@@ -540,21 +522,24 @@ tool and not as an approval-gated tool.
 - The workspace can host both:
   - a trusted local runtime tool reachable through bash
   - a first-class MCP stdio tool registered through the API
+- The validator demo is grounded in real files and real validator behavior, not
+  a fake profile compiler story.
 
 ## Exact Presenter Script
 
 If the live demo needs tighter narration, use this sequence:
 
 1. "Priya is working on the Acme RPM Implementation Guide and the blood pressure
-   panel is failing validation before tomorrow's review."
+   example resources are failing validation before tomorrow's review."
 2. "She creates a fresh workspace called `bp-ig-fix` through Shelley Manager."
-3. "Inside that workspace, Shelley runs the FHIR Validator JAR and finds a
-   concrete slicing problem in `input/fsh/BloodPressurePanel.fsh`."
+3. "Inside that workspace, Shelley runs the real FHIR Validator JAR against two
+   example JSON resources and finds concrete bad values."
 4. "Marco joins the same topic late from the CLI and catches up to the current
    session."
 5. "Marco asks Shelley to search related HL7 Jira issues through an MCP stdio
    tool running inside the bubblewrapped workspace runtime."
-6. "Shelley updates the FSH, re-runs validation, and clears the slicing error."
+6. "Shelley updates the JSON examples, re-runs validation, and clears the hard
+   errors."
 7. "The architectural split is that the validator is a trusted local runtime
    capability, while Jira search is a first-class MCP workspace tool."
 
@@ -575,11 +560,11 @@ If the live demo needs tighter narration, use this sequence:
   - hosted registration of `hl7-jira` as MCP stdio
   - runtime availability of `bun` inside `bwrap`
   - workspace-local Bun MCP fixture can create/query its SQLite backing store
+  - example JSON resources are present in the workspace and can be validated by
+    the real validator CLI
 
 ## Optional Follow-On Demo
 
-If we decide approval is important enough to headline, it should be a second
-short demo or an explicit extension, not mixed into the mainline story.
-
-That extension should use a genuinely managed tool with external side effects,
-not the local validator or IG publisher path.
+If we later want to return to a profile-authoring story, that should be a second
+demo with SUSHI or IG Publisher in the loop. The real validator is a much
+better fit for example-resource validation than for raw `.fsh`.

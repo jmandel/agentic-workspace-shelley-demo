@@ -995,3 +995,86 @@
 - This avoids the disorienting half-restored scroll position that could happen
   while websocket-connected content was rehydrating after refresh.
 - No programmatic scrolling in the manager demo UI uses smooth animation now.
+
+### 2026-03-10 update — real FHIR validator findings
+- The official validator CLI works on this host with the existing Java runtime:
+  - OpenJDK 17.0.17
+  - validator CLI 6.8.2 built 2026-03-01
+- Working real commands against simple R4 files:
+  - `java -jar validator_cli.jar patient-valid.json -version 4.0.1 -tx n/a`
+  - `java -jar validator_cli.jar patient-invalid.json -version 4.0.1 -tx n/a`
+- On a minimal valid Patient resource, the validator returns:
+  - `0 errors, 1 warnings`
+  - the warning is the expected best-practice `dom-6` narrative warning
+- On an intentionally broken Patient resource, the validator returns:
+  - invalid administrative gender code
+  - invalid `birthDate`
+  - plus the same `dom-6` warning
+- Important limitation:
+  - raw `.fsh` input is not accepted by the real validator
+  - validating `BloodPressurePanel.fsh` fails with `Unable to find/resolve/read`
+    after an XML parse error (`Content is not allowed in prolog`)
+  - so the current FSH-centric demo story cannot use the real validator directly
+    without first generating JSON artifacts (for example through SUSHI / IG
+    Publisher)
+- Operational note:
+  - concurrent validator runs can fight over the shared package cache lock under
+    `~/.fhir/packages`
+  - the `bwrap` runtime model is a good fit here because each workspace already
+    gets its own sandbox-local `HOME`, which avoids cross-workspace cache-lock
+    contention
+
+### 2026-03-10 update — real validator demo integration
+- Replaced the fake `fhir-validator` shell fixture with a real manager-backed
+  local tool bundle:
+  - the local tool catalog still publishes `fhir-validator` as a simple manager
+    capability name
+  - internally, the manager now materializes that bundle into a cache directory
+    and downloads the official validator JAR there on demand
+  - the wrapper command itself stays stable as `/tools/bin/fhir-validator`
+- Pinned the demo validator bundle to the official 6.8.2 release and checksum.
+- Switched the seeded demo workspace away from raw FSH and onto example JSON
+  resources the real validator can actually help with:
+  - `input/examples/Patient-bp-alice-smith.json`
+  - `input/examples/Observation-bp-alice-morning.json`
+- The seeded Observation now intentionally triggers real blood-pressure panel
+  validation behavior:
+  - invalid `effectiveDateTime`
+  - missing systolic / diastolic component slices for the LOINC blood pressure
+    panel code
+- Updated the predictable `ws` tutorial/help text and the manager tutorial page
+  so the scripted demo commands now match those real example-resource files.
+
+### Sandbox/runtime follow-up that became implementation
+- The first cold validator run in `bwrap` mode exposed two real operational
+  issues:
+  - the predictable `bash:` path still used the bash tool's fast 30-second
+    timeout
+  - Java was still resolving `user.home` to the host user's passwd entry rather
+    than the workspace-local sandbox home
+- Fixed both:
+  - predictable validator/publisher calls now request `slow_ok`
+  - predictable plain `bash: fhir-validator ...` and `bash: ig-publisher ...`
+    also request `slow_ok`
+  - runtime launch now sets `JAVA_TOOL_OPTIONS=-Duser.home=...` so validator
+    package cache lives in the workspace-local home for process, docker, and
+    `bwrap` modes
+- Result:
+  - process-mode smoke now proves a real validator run end to end
+  - `bwrap` smoke now also proves a real validator run end to end, including
+    late-join replay of the validator output
+
+### Validation update — real validator checkpoint
+- Focused manager tests:
+  - `go test ./manager -run 'TestLoadLocalToolsCatalogMaterializesArtifacts|TestManagerLocalToolsCatalogAndWorkspaceSelection|TestManagerRecoverPersistedWorkspaces|TestManagerUIRoutes|TestBuild(Process|Docker|Bwrap)Command' -v`
+- Focused Shelley loop tests:
+  - `go test ./loop -run 'TestPredictableServiceWSHelp|TestPredictableServiceWSDemoToolPauseAndAfterText|TestPredictableServiceBashFHIRValidatorUsesSlowOK' -v`
+- Full smoke:
+  - `./test/smoke.sh`
+  - `SMOKE_RUNTIME_MODE=bwrap ./test/smoke.sh`
+- The smoke now proves:
+  - the demo workspace seeds real validator-friendly example resources
+  - the manager-published `fhir-validator` local tool runs the real validator
+    JAR
+  - CLI replay includes real validator output, not a fixture string
+  - the same path works in both process and `bwrap` runtime modes

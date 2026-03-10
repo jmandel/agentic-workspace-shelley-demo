@@ -9,23 +9,49 @@ import (
 
 const demoRPMTemplateName = "acme-rpm-ig"
 
-const demoBloodPressurePanelFSH = `Profile: AcmeBloodPressurePanel
-Parent: Observation
-Id: acme-bp-panel
-Title: "Acme Blood Pressure Panel"
-Description: "Deliberately broken demo profile for validator debugging."
+const demoPatientExampleJSON = `{
+  "resourceType": "Patient",
+  "id": "alice-smith",
+  "active": true,
+  "name": [
+    {
+      "family": "Smith",
+      "given": ["Alice"]
+    }
+  ],
+  "gender": "woman",
+  "birthDate": "1974-25-12"
+}
+`
 
-* status = #final
-* code = http://loinc.org#85354-9 "Blood pressure panel with all children optional"
-* subject 1..1
-* effective[x] only dateTime
-* component contains
-    systolicBP 1..1 and
-    diastolicBP 1..1
-* component[systolicBP].code = http://loinc.org#8480-6 "Systolic blood pressure"
-* component[systolicBP].value[x] only Quantity
-* component[diastolicBP].code = http://loinc.org#8462-4 "Diastolic blood pressure"
-* component[diastolicBP].value[x] only Quantity
+const demoObservationExampleJSON = `{
+  "resourceType": "Observation",
+  "id": "bp-alice-morning",
+  "status": "final",
+  "category": [
+    {
+      "coding": [
+        {
+          "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+          "code": "vital-signs"
+        }
+      ]
+    }
+  ],
+  "code": {
+    "coding": [
+      {
+        "system": "http://loinc.org",
+        "code": "85354-9",
+        "display": "Blood pressure panel with all children optional"
+      }
+    ]
+  },
+  "subject": {
+    "reference": "Patient/alice-smith"
+  },
+  "effectiveDateTime": "2026-02-30T07:00:00Z"
+}
 `
 
 const demoWorkspaceReadme = `# Acme RPM IG Demo Workspace
@@ -33,11 +59,12 @@ const demoWorkspaceReadme = `# Acme RPM IG Demo Workspace
 This workspace simulates a blood-pressure implementation guide debugging session.
 
 Known issue:
-- input/fsh/BloodPressurePanel.fsh constrains Observation.component slices
-  without declaring slicing metadata.
+- two example resources fail the real FHIR Validator CLI
+- the Patient uses a non-FHIR administrative gender code and an invalid birth date
+- the blood pressure Observation is missing required panel components and has an invalid effectiveDateTime
 
 Suggested first command:
-- fhir-validator input/fsh/BloodPressurePanel.fsh
+- fhir-validator input/examples/Patient-bp-alice-smith.json input/examples/Observation-bp-alice-morning.json
 `
 
 //go:embed testdata/hl7-jira-mcp.js
@@ -50,11 +77,15 @@ func seedWorkspaceTemplate(workspaceDir, templateName string) error {
 		return nil
 	}
 
-	if err := os.MkdirAll(filepath.Join(workspaceDir, "input", "fsh"), 0o755); err != nil {
+	examplesDir := filepath.Join(workspaceDir, "input", "examples")
+	if err := os.MkdirAll(examplesDir, 0o755); err != nil {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(workspaceDir, "README.md"), []byte(demoWorkspaceReadme), 0o644); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(workspaceDir, "input", "fsh", "BloodPressurePanel.fsh"), []byte(demoBloodPressurePanelFSH), 0o644)
+	if err := os.WriteFile(filepath.Join(examplesDir, "Patient-bp-alice-smith.json"), []byte(demoPatientExampleJSON), 0o644); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(examplesDir, "Observation-bp-alice-morning.json"), []byte(demoObservationExampleJSON), 0o644)
 }

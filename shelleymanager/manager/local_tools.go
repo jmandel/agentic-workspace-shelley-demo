@@ -1,18 +1,24 @@
 package manager
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 )
 
 const defaultLocalToolsCatalogName = "catalog.json"
 
 type LocalTool struct {
 	Name         string
+	Version      string
 	Description  string
 	Guidance     string
 	Requirements []string
@@ -27,16 +33,25 @@ type LocalToolCommand struct {
 
 type localToolCatalogEntry struct {
 	Name         string                    `json:"name"`
+	Version      string                    `json:"version,omitempty"`
 	Description  string                    `json:"description"`
 	Guidance     string                    `json:"guidance,omitempty"`
 	Requirements []string                  `json:"requirements,omitempty"`
 	Root         string                    `json:"root,omitempty"`
 	Commands     []localToolCatalogCommand `json:"commands"`
+	Artifacts    []localToolCatalogArtifact `json:"artifacts,omitempty"`
 }
 
 type localToolCatalogCommand struct {
 	Name         string `json:"name"`
 	RelativePath string `json:"relativePath,omitempty"`
+}
+
+type localToolCatalogArtifact struct {
+	URL          string `json:"url"`
+	RelativePath string `json:"relativePath"`
+	SHA256       string `json:"sha256,omitempty"`
+	Executable   bool   `json:"executable,omitempty"`
 }
 
 type localToolInfo struct {
@@ -55,7 +70,7 @@ type localToolCommandInfo struct {
 	Command string `json:"command"`
 }
 
-func LoadLocalToolsCatalog(sharedToolsDir, explicitPath string) ([]LocalTool, error) {
+func LoadLocalToolsCatalog(sharedToolsDir, explicitPath, cacheRoot string) ([]LocalTool, error) {
 	sharedToolsDir = strings.TrimSpace(sharedToolsDir)
 	if sharedToolsDir == "" {
 		return nil, nil
@@ -102,13 +117,22 @@ func LoadLocalToolsCatalog(sharedToolsDir, explicitPath string) ([]LocalTool, er
 		if root == "" {
 			root = entry.Name
 		}
-		hostRoot := filepath.Join(sharedToolsDir, filepath.Clean(root))
-		info, err := os.Stat(hostRoot)
+		sourceRoot := filepath.Join(sharedToolsDir, filepath.Clean(root))
+		info, err := os.Stat(sourceRoot)
 		if err != nil {
-			return nil, fmt.Errorf("local tool %q root %q: %w", entry.Name, hostRoot, err)
+			return nil, fmt.Errorf("local tool %q root %q: %w", entry.Name, sourceRoot, err)
 		}
 		if !info.IsDir() {
-			return nil, fmt.Errorf("local tool %q root %q is not a directory", entry.Name, hostRoot)
+			return nil, fmt.Errorf("local tool %q root %q is not a directory", entry.Name, sourceRoot)
+		}
+
+		hostRoot := sourceRoot
+		if len(entry.Artifacts) > 0 {
+			resolvedRoot, err := materializeLocalToolBundle(sourceRoot, cacheRoot, entry)
+			if err != nil {
+				return nil, fmt.Errorf("materialize local tool %q: %w", entry.Name, err)
+			}
+			hostRoot = resolvedRoot
 		}
 
 		commands := make([]LocalToolCommand, 0, len(entry.Commands))
@@ -125,6 +149,14 @@ func LoadLocalToolsCatalog(sharedToolsDir, explicitPath string) ([]LocalTool, er
 				Name:         cmd.Name,
 				RelativePath: filepath.Clean(cmd.RelativePath),
 			})
+			commandPath := filepath.Join(hostRoot, filepath.Clean(cmd.RelativePath))
+			commandInfo, err := os.Stat(commandPath)
+			if err != nil {
+				return nil, fmt.Errorf("local tool %q command %q: %w", entry.Name, commandPath, err)
+			}
+			if commandInfo.IsDir() {
+				return nil, fmt.Errorf("local tool %q command %q is a directory", entry.Name, commandPath)
+			}
 		}
 		if len(commands) == 0 {
 			return nil, fmt.Errorf("local tool %q requires at least one command", entry.Name)
@@ -135,6 +167,7 @@ func LoadLocalToolsCatalog(sharedToolsDir, explicitPath string) ([]LocalTool, er
 
 		tools = append(tools, LocalTool{
 			Name:         entry.Name,
+			Version:      strings.TrimSpace(entry.Version),
 			Description:  entry.Description,
 			Guidance:     entry.Guidance,
 			Requirements: requirements,
@@ -203,10 +236,211 @@ func localToolInfos(tools []LocalTool) []localToolInfo {
 			Commands:     commands,
 			Guidance:     tool.Guidance,
 			Requirements: append([]string(nil), tool.Requirements...),
-			Version:      "demo",
+			Version:      toolVersion(tool),
 		})
 	}
 	return infos
+}
+
+func toolVersion(tool LocalTool) string {
+	if strings.TrimSpace(tool.Version) == "" {
+		return "manager"
+	}
+	return strings.TrimSpace(tool.Version)
+}
+
+func materializeLocalToolBundle(sourceRoot, cacheRoot string, entry localToolCatalogEntry) (string, error) {
+	cacheRoot = strings.TrimSpace(cacheRoot)
+	if cacheRoot == "" {
+		return "", fmt.Errorf("cache root required for local tool artifacts")
+	}
+
+	resolvedRoot := filepath.Join(cacheRoot, cacheDirName(entry.Name, entry.Version))
+	if err := os.MkdirAll(resolvedRoot, 0o755); err != nil {
+		return "", err
+	}
+	if err := copyDirContents(sourceRoot, resolvedRoot); err != nil {
+		return "", err
+	}
+	for _, artifact := range entry.Artifacts {
+		if err := ensureLocalToolArtifact(resolvedRoot, artifact); err != nil {
+			return "", err
+		}
+	}
+	return resolvedRoot, nil
+}
+
+func cacheDirName(name, version string) string {
+	name = sanitizeCacheComponent(name)
+	version = sanitizeCacheComponent(version)
+	if version == "" {
+		return name
+	}
+	return name + "-" + version
+}
+
+func sanitizeCacheComponent(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "tool"
+	}
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-' || r == '_' || r == '.':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
+}
+
+func copyDirContents(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, info.Mode().Perm())
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		return copyFile(path, target, info.Mode().Perm())
+	})
+}
+
+func ensureLocalToolArtifact(root string, artifact localToolCatalogArtifact) error {
+	rel := filepath.Clean(strings.TrimSpace(artifact.RelativePath))
+	if rel == "." || rel == "" || rel == string(filepath.Separator) {
+		return fmt.Errorf("artifact relativePath required")
+	}
+	if strings.HasPrefix(rel, "..") {
+		return fmt.Errorf("artifact relativePath %q escapes bundle root", artifact.RelativePath)
+	}
+	target := filepath.Join(root, rel)
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	if ok, err := localToolArtifactValid(target, artifact); err == nil && ok {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return downloadLocalToolArtifact(target, artifact)
+}
+
+func localToolArtifactValid(target string, artifact localToolCatalogArtifact) (bool, error) {
+	info, err := os.Stat(target)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if info.IsDir() || info.Size() == 0 {
+		return false, nil
+	}
+	if checksum := strings.TrimSpace(artifact.SHA256); checksum != "" {
+		sum, err := sha256File(target)
+		if err != nil {
+			return false, err
+		}
+		if !strings.EqualFold(sum, checksum) {
+			return false, nil
+		}
+	}
+	if artifact.Executable {
+		if err := os.Chmod(target, 0o755); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+func downloadLocalToolArtifact(target string, artifact localToolCatalogArtifact) error {
+	url := strings.TrimSpace(artifact.URL)
+	if url == "" {
+		return fmt.Errorf("artifact url required for %q", artifact.RelativePath)
+	}
+	tmp := target + ".tmp"
+	_ = os.Remove(tmp)
+
+	client := &http.Client{Timeout: 2 * time.Minute}
+	res, err := client.Get(url)
+	if err != nil {
+		return fmt.Errorf("download %q: %w", url, err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, res.Body)
+		return fmt.Errorf("download %q returned %d", url, res.StatusCode)
+	}
+
+	mode := os.FileMode(0o644)
+	if artifact.Executable {
+		mode = 0o755
+	}
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, res.Body); err != nil {
+		out.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if checksum := strings.TrimSpace(artifact.SHA256); checksum != "" {
+		sum, err := sha256File(tmp)
+		if err != nil {
+			_ = os.Remove(tmp)
+			return err
+		}
+		if !strings.EqualFold(sum, checksum) {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("downloaded artifact %q checksum mismatch: got %s want %s", artifact.RelativePath, sum, checksum)
+		}
+	}
+	if err := os.Rename(tmp, target); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if artifact.Executable {
+		return os.Chmod(target, 0o755)
+	}
+	return nil
+}
+
+func sha256File(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func writeWorkspaceLocalToolGuidance(workspaceDir string, tools []LocalTool) error {

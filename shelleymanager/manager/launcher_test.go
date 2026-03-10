@@ -29,6 +29,12 @@ func TestBuildProcessCommandSetsWorkspaceToolsEnv(t *testing.T) {
 	if !strings.Contains(env, "WORKSPACE_TOOLS_DIR="+filepath.Join(spec.StateDir, "tools")) {
 		t.Fatalf("expected tools env, got %q", env)
 	}
+	if !strings.Contains(env, "HOME="+filepath.Join(spec.StateDir, "home")) {
+		t.Fatalf("expected workspace-local home env, got %q", env)
+	}
+	if !strings.Contains(env, "JAVA_TOOL_OPTIONS=-Duser.home="+filepath.Join(spec.StateDir, "home")) {
+		t.Fatalf("expected java user.home override, got %q", env)
+	}
 	if !strings.Contains(env, "PATH="+filepath.Join(spec.StateDir, "tools", "bin")) {
 		t.Fatalf("expected tools bin in path, got %q", env)
 	}
@@ -64,6 +70,8 @@ func TestBuildDockerCommand(t *testing.T) {
 		"-p 127.0.0.1:43123:43123",
 		"-v " + spec.WorkspaceDir + ":/workspace",
 		"-v " + filepath.Join(spec.StateDir, "tools") + ":/tools",
+		"-e HOME=/state/home",
+		"-e JAVA_TOOL_OPTIONS=-Duser.home=/state/home",
 		"-e WORKSPACE_TOOLS_DIR=/tools",
 		"example/shelley:latest shelley",
 		"-db /state/shelley.db",
@@ -134,6 +142,8 @@ func TestBuildBwrapCommand(t *testing.T) {
 		"--bind " + filepath.Join(spec.StateDir, "tmp") + " /tmp",
 		"--share-net",
 		"--setenv WORKSPACE_NAME demo",
+		"--setenv HOME /sandbox/home",
+		"--setenv JAVA_TOOL_OPTIONS -Duser.home=/sandbox/home",
 		"--setenv WORKSPACE_TOOLS_DIR /tools",
 		"-- /sandbox/bin/shelley",
 		"-db /sandbox/shelley.db",
