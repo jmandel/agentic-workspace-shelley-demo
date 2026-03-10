@@ -439,9 +439,10 @@
 - Added `docs/rfcs/` as a place for narrower design decisions that should not be buried in the plan or the running journal.
 - Added the first RFC:
   - `0001-workspace-manager-runtime-handoff.md`
-- This RFC captures the design distinction that came up in discussion:
-  - Shelley can reasonably remain a single-workspace runtime
-  - the protocol gap is the missing handoff between a manager API that creates workspaces and a runtime API that serves one workspace
+- The RFC was then narrowed after re-reading the draft spec:
+  - it no longer proposes root-scoped runtime routes as an equal public protocol form
+  - it now focuses specifically on clarifying the manager response as a handoff object
+  - it stays aligned with the draft's canonical namespaced `/apis/v1/...` resource model
 
 ### 2026-03-10 update — workspace route cleanup
 - Cleaned up Shelley’s workspace route wiring so the code now treats `/ws/*` as the canonical workspace runtime REST surface.

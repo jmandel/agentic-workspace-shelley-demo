@@ -1,109 +1,112 @@
-# RFC 0001: Workspace Manager and Runtime API Handoff
+# RFC 0001: Clarify Workspace Manager to Runtime Handoff
 
 - Status: draft
 - Date: 2026-03-10
 
 ## Summary
 
-The protocol should distinguish between:
-- a manager API that creates and locates workspaces
-- a runtime API that operates inside one already-running workspace
+The protocol draft already distinguishes:
+- a Workspace Manager API that creates and manages workspaces
+- a workspace runtime that serves topics, files, tools, and ACP endpoints
 
-This lets a Shelley process remain a single-workspace runtime without forcing
-workspace identity into every runtime path.
+This RFC does not change that split.
+
+Instead, it narrows the question to one missing detail: what exactly the
+manager must return so a client can reliably hand off from manager discovery to
+workspace interaction.
 
 ## Context
 
-Right now the draft materials blur two concerns:
-- creating or finding a workspace from outside the runtime
-- talking to topics, files, tools, and websocket streams inside that workspace
+The current draft already defines:
+- Manager routes under `/apis/v1/namespaces/{ns}/workspaces`
+- workspace resource routes under `/apis/v1/namespaces/{ns}/workspaces/{name}/...`
+- ACP endpoints such as:
+  - `wss://relay.example.com/acp/acme/payments-debug`
+  - `wss://relay.example.com/acp/acme/payments-debug/topics/debug-timeout`
 
-That creates tension around URL shape:
-- if every API lives under `/workspaces/{id}/...`, multi-tenant gateways are
-  easy to model, but a dedicated single-workspace runtime has to expose an
-  artificial embedded workspace path
-- if a runtime exposes root-scoped `/topics`, `/files`, `/tools`, and
-  `/ws/topic/{name}`, a single-workspace process is simple, but there is no
-  clean protocol-defined handoff for "create a new workspace and tell me where
-  it lives"
+That is a real control-plane/runtime split already.
 
-For Shelley specifically, `1 process = 1 workspace` is a reasonable deployment
-model. The missing piece is not necessarily a namespaced runtime path. The
-missing piece is a first-class manager-to-runtime handoff.
+The ambiguity is narrower:
+- the example manager response includes an ACP `endpoint` and per-topic ACP URLs
+- but it does not clearly define the complete handoff contract a client should
+  use after creation or lookup
+- in particular, it is not explicit whether clients should derive all runtime
+  URLs from naming conventions, or whether the manager response is expected to
+  carry canonical runtime connection details
+
+This matters for implementations like Shelley, where `1 process = 1 workspace`
+may be a reasonable runtime architecture even if the public protocol remains
+namespaced and manager-scoped.
 
 ## Decision
 
-The protocol should define two layers.
+The draft's canonical public route model stands:
+- Manager and resource APIs remain namespaced under `/apis/v1/...`
+- topic ACP endpoints remain canonical workspace runtime entrypoints
+- this RFC does not propose a second equal public route shape
 
-### 1. Manager API
+What this RFC adds is a clearer handoff requirement.
 
-The manager API owns lifecycle and discovery:
-- create workspace
-- list workspaces
-- inspect workspace status
-- stop, delete, or otherwise manage a workspace runtime
+### Manager responses should be explicit handoff objects
 
-Example shape:
+When a client creates or fetches a workspace, the manager response should
+contain enough information to transition cleanly into workspace use without
+guessing undocumented URL rules.
 
-```json
-{
-  "workspaceId": "ws_123",
-  "name": "payments-debug",
-  "status": "ready",
-  "runtimeBaseUrl": "https://runtime.example.com/w/ws_123",
-  "runtimeWsBaseUrl": "wss://runtime.example.com/w/ws_123",
-  "capabilities": ["topics", "files", "tools"]
-}
+At minimum, the handoff object should make these discoverable:
+- workspace identity
+- workspace status
+- workspace ACP endpoint
+- topic ACP endpoints, or a clearly specified derivation rule
+- workspace REST resource base, if clients are expected to call runtime-scoped
+  REST resources directly after discovery
+
+Using the draft's current example shape, that likely means retaining fields
+such as:
+
+```yaml
+id: payments-debug.acme@relay.example.com
+namespace: acme
+name: payments-debug
+status: active
+endpoint: wss://relay.example.com/acp/acme/payments-debug
+topics:
+  - name: general
+    acp: wss://relay.example.com/acp/acme/payments-debug/topics/general
 ```
 
-Key point:
-- `workspaceId` is the stable identity
-- `runtimeBaseUrl` is where the runtime is currently reachable
+and deciding whether an additional REST base URL field is required.
 
-Those should not be treated as the same thing.
+### Public mount shape remains canonical
 
-### 2. Workspace Runtime API
+This RFC does not bless root-scoped runtime routes like `/topics` or `/files`
+as a second canonical public form.
 
-The runtime API owns in-workspace operations:
-- topics
-- files
-- tools
-- workspace websocket streams
-
-The runtime API may be mounted in either form:
-- root-scoped for a dedicated runtime process:
-  - `/topics`
-  - `/files`
-  - `/tools`
-  - `/ws/topic/{name}`
-- gateway-scoped for a shared host:
-  - `/workspaces/{id}/topics`
-  - `/workspaces/{id}/files`
-  - `/workspaces/{id}/tools`
-  - `/workspaces/{id}/ws/topic/{name}`
-
-The logical API should be the same in both cases. Only the mounting changes.
+A single-workspace runtime may still exist internally behind a proxy, relay, or
+manager, but that is an implementation choice. The public protocol should
+continue to describe the namespaced route model already present in the draft.
 
 ## Consequences
 
 Benefits:
-- fits Shelley cleanly as a single-workspace runtime
-- still allows a multi-workspace gateway or relay layer
-- avoids baking deployment topology into workspace identity
-- gives clients an explicit handoff from creation to runtime use
+- stays aligned with the existing protocol draft
+- clarifies what a client may rely on after manager discovery
+- supports dedicated single-workspace runtimes without requiring the protocol to
+  standardize their internal mount shape
+- reduces accidental dependence on ad hoc URL construction
 
 Costs:
-- introduces a real control-plane/runtime split into the protocol
-- requires clients to understand discovery first, then runtime interaction
-- requires the protocol to define what fields a manager must return on create
+- requires the draft to be more precise about manager response fields
+- may require adding one explicit REST base URL field if the current ACP-only
+  handoff is not sufficient for real clients
 
 ## Open Questions
 
-- Should the manager return a single `runtimeBaseUrl` plus conventions for WS,
-  or distinct HTTP and WS base URLs?
-- Should `capabilities` be part of the create response, discovery response, or
-  both?
-- Do we want a canonical path prefix for gateway-mounted runtimes, or should
-  that remain deployment-defined as long as discovery returns the actual URL?
-- If a workspace is relocated or restarted, what stability guarantees do we
-  want for `runtimeBaseUrl`?
+- Is the existing `endpoint` field sufficient, or should the manager also return
+  a canonical REST base URL for workspace-scoped resources?
+- Are per-topic ACP URLs required in the response, or should the spec define a
+  deterministic derivation rule from the workspace endpoint?
+- Should manager responses expose capability flags, or should clients infer
+  features from protocol version and successful calls?
+- Which fields are mandatory on `POST /workspaces` responses versus
+  `GET /workspaces/{name}` responses?
