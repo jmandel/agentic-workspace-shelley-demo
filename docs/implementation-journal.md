@@ -858,6 +858,9 @@
   - local `bash` flows that exercise mounted FHIR tooling
   - MCP tool calls such as the HL7 Jira fixture
 - The goal is to make the live demo show real tool traffic without depending on a non-deterministic model.
+- Add fixture-level delay controls for the predictable model so queueing demos
+  can request a slow turn only where needed, instead of making the whole
+  predictable suite slower by default.
 
 ### 2026-03-10 update — protocol RFCs moved into `agentic-workspace`
 - The canonical RFC set now lives in `agentic-workspace/rfcs/` instead of this
@@ -867,3 +870,22 @@
   - keeping them next to `agent-workspace.md` makes the spec easier to evolve in
     one place
 - The root `docs/rfcs/README.md` now just points at the protocol repo copy.
+
+### 2026-03-10 update — demo queueing is now first-class in the browser UI
+- The simple manager-hosted topic page now exposes queue state as a dedicated
+  panel instead of dumping queue events into the message log.
+- Browser participants can now:
+  - see the active prompt id
+  - see queued prompt entries with owner and text
+  - cancel their own queued prompts
+  - clear all of their own queued prompts
+- The browser queue panel reads the same public manager-facing queue APIs that
+  the CLI uses, so the demo now exercises:
+  - websocket queue lifecycle events
+  - `GET /topics/{topic}/queue`
+  - `DELETE /topics/{topic}/queue/{promptId}`
+  - `POST /topics/{topic}/queue:clear-mine`
+- Added browser-visible smoke coverage for the queued state:
+  - a delayed active prompt keeps the queue live long enough for headless
+    Chromium to verify the active prompt, queued prompt, and cancel control in
+    the rendered DOM

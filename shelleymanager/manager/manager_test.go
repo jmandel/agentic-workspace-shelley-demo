@@ -604,4 +604,7 @@ func TestManagerUIRoutes(t *testing.T) {
 	if !strings.Contains(string(appBody), "Delete Topic") {
 		t.Fatalf("expected app page body to expose topic deletion controls, got %s", appBody)
 	}
+	if !strings.Contains(string(appBody), "Prompt Queue") || !strings.Contains(string(appBody), "Clear My Queue") || !strings.Contains(string(appBody), "Refresh Queue") {
+		t.Fatalf("expected app page body to expose queue controls, got %s", appBody)
+	}
 }

@@ -303,7 +303,7 @@ QUEUE_WS_OUTPUT="$(
     const ws = new WebSocket("ws://127.0.0.1:'"$PORT"'/acp/'"$MANAGER_NAMESPACE"'/'"$WORKSPACE_NAME"'/topics/'"$TOPIC_NAME"'?client_id=queue-smoke");
     const seen = [];
     ws.onopen = () => {
-      ws.send(JSON.stringify({ type: "prompt", promptId: "p-smoke-1", data: "echo: smoke queue first" }));
+      ws.send(JSON.stringify({ type: "prompt", promptId: "p-smoke-1", data: "bash: sleep 3; printf \"smoke queue first\\n\"" }));
       ws.send(JSON.stringify({ type: "prompt", promptId: "p-smoke-2", data: "echo: smoke queue second" }));
     };
     ws.onmessage = (event) => {
@@ -333,6 +333,14 @@ CLI_QUEUE_OUTPUT="$(
 )"
 require_output "$CLI_QUEUE_OUTPUT" "active=p-smoke-1" "cli.ts queue reports the active prompt"
 require_output "$CLI_QUEUE_OUTPUT" "p-smoke-2 queued" "cli.ts queue reports the queued prompt"
+
+if command -v chromium >/dev/null 2>&1; then
+  QUEUE_APP_DOM="$(chromium --headless --disable-gpu --virtual-time-budget=1000 --dump-dom "http://localhost:$PORT/app/$MANAGER_NAMESPACE/$WORKSPACE_NAME/$TOPIC_NAME?client_id=queue-smoke" 2>/dev/null)"
+  require_output "$QUEUE_APP_DOM" "Prompt Queue" "topic web UI renders a dedicated queue panel"
+  require_output "$QUEUE_APP_DOM" "Active prompt p-smoke-1" "topic web UI shows the active prompt in the queue panel"
+  require_output "$QUEUE_APP_DOM" "p-smoke-2" "topic web UI renders the queued prompt"
+  require_output "$QUEUE_APP_DOM" "Cancel" "topic web UI exposes queued prompt cancellation controls for the current participant"
+fi
 
 curl -sf -X DELETE -H 'X-Workspace-Client-ID: queue-smoke' \
   "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/topics/$TOPIC_NAME/queue/p-smoke-2" >/dev/null

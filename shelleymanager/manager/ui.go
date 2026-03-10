@@ -391,7 +391,14 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
     .meta { color:var(--muted); font-size:13px; }
     textarea { width:100%; min-height:90px; box-sizing:border-box; padding:12px; border-radius:12px; border:1px solid var(--line); font:inherit; }
     button { border:0; border-radius:999px; background:var(--accent); color:#fff; padding:10px 16px; font:inherit; cursor:pointer; }
+    button.secondary { background:#ece4d6; color:var(--ink); }
+    button[disabled] { opacity:.55; cursor:default; }
     .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    .queue-list { display:grid; gap:10px; margin-top:12px; }
+    .queue-entry { padding:12px; border:1px solid #ece2d3; border-radius:12px; background:#f7f2e8; }
+    .queue-entry.own { border-color:#9ac7be; background:#eef7f5; }
+    .queue-text { margin-top:6px; }
+    .queue-header { justify-content:space-between; }
     code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; }
     pre { white-space: pre-wrap; background:#f7f2e8; border-radius:12px; padding:12px; overflow:auto; }
   </style>
@@ -413,6 +420,20 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
       <pre>WS_MANAGER={{.Origin}} bun run cli.ts connect {{.Workspace}} {{.Topic}}</pre>
     </div>
     <div class="card">
+      <div class="row" style="justify-content:space-between;">
+        <div>
+          <h2 style="margin:0 0 8px;">Prompt Queue</h2>
+          <div class="meta">Participant <code id="participant-id"></code></div>
+        </div>
+        <div class="row">
+          <button id="refresh-queue" type="button" class="secondary">Refresh Queue</button>
+          <button id="clear-my-queue" type="button" class="secondary" disabled>Clear My Queue</button>
+        </div>
+      </div>
+      <div id="queue-summary" class="meta">Loading queue…</div>
+      <div id="queue-list" class="queue-list"></div>
+    </div>
+    <div class="card">
       <div id="messages"></div>
     </div>
     <div class="card">
@@ -428,19 +449,49 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
   <script>
     const messagesEl = document.getElementById('messages');
     const statusEl = document.getElementById('status');
+    const queueSummaryEl = document.getElementById('queue-summary');
+    const queueListEl = document.getElementById('queue-list');
+    const clearMyQueueButton = document.getElementById('clear-my-queue');
+    const refreshQueueButton = document.getElementById('refresh-queue');
+    const participantIdEl = document.getElementById('participant-id');
+    const namespace = document.body.dataset.namespace;
+    const workspace = document.body.dataset.workspace;
+    const topic = document.body.dataset.topic;
+    const queueApiBase = '/apis/v1/namespaces/' + encodeURIComponent(namespace) + '/workspaces/' + encodeURIComponent(workspace) + '/topics/' + encodeURIComponent(topic);
     const wsPath = document.body.dataset.wsPath;
     const wsScheme = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
     const participantKey = 'workspace-participant-id';
-    let participantId = localStorage.getItem(participantKey);
+    const params = new URLSearchParams(window.location.search);
+    let participantId = params.get('client_id') || localStorage.getItem(participantKey);
     if (!participantId) {
       participantId = 'web-' + Math.random().toString(36).slice(2, 10);
       localStorage.setItem(participantKey, participantId);
     }
+    participantIdEl.textContent = participantId;
     const wsURL = wsScheme + window.location.host + wsPath + '?client_id=' + encodeURIComponent(participantId);
     const conn = new WebSocket(wsURL);
     let wsOpened = false;
     let wsFailureShown = false;
     let promptCounter = 0;
+    let queueRefreshTimer = null;
+    let queueState = { activePromptId: '', entries: [] };
+
+    function requestHeaders(extra) {
+      return Object.assign({'X-Workspace-Client-ID': participantId}, extra || {});
+    }
+
+    async function readJSONResponse(res, label) {
+      const text = await res.text();
+      if (!res.ok) {
+        throw new Error(label + ': ' + res.status + ' ' + (text.trim() || 'request failed'));
+      }
+      if (!text) return {};
+      try {
+        return JSON.parse(text);
+      } catch (err) {
+        throw new Error(label + ': invalid JSON response');
+      }
+    }
 
     function appendMessage(kind, title, body) {
       const div = document.createElement('div');
@@ -463,10 +514,126 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
       appendMessage('error', 'Realtime connection failed', message);
     }
 
+    function normalizeQueueSnapshot(snapshot) {
+      return {
+        activePromptId: snapshot && snapshot.activePromptId ? snapshot.activePromptId : '',
+        entries: Array.isArray(snapshot && snapshot.entries) ? snapshot.entries : [],
+      };
+    }
+
+    function renderQueue() {
+      queueListEl.replaceChildren();
+
+      const ownEntries = queueState.entries.filter((entry) => entry.submittedBy && entry.submittedBy.id === participantId);
+      clearMyQueueButton.disabled = ownEntries.length === 0;
+
+      const queuedCount = queueState.entries.length;
+      if (queueState.activePromptId) {
+        queueSummaryEl.textContent = 'Active prompt ' + queueState.activePromptId + ' · ' + queuedCount + ' queued';
+      } else if (queuedCount > 0) {
+        queueSummaryEl.textContent = 'No active prompt · ' + queuedCount + ' queued';
+      } else {
+        queueSummaryEl.textContent = 'No queued prompts.';
+      }
+
+      if (queuedCount === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'meta';
+        empty.textContent = 'No queued prompts behind the current turn.';
+        queueListEl.appendChild(empty);
+        return;
+      }
+
+      for (const entry of queueState.entries) {
+        const item = document.createElement('div');
+        item.className = 'queue-entry';
+        if (entry.submittedBy && entry.submittedBy.id === participantId) {
+          item.classList.add('own');
+        }
+
+        const header = document.createElement('div');
+        header.className = 'row queue-header';
+
+        const label = document.createElement('div');
+        label.className = 'meta';
+        const owner = entry.submittedBy && entry.submittedBy.id ? entry.submittedBy.id : 'unknown';
+        const pieces = [];
+        if (entry.position) pieces.push('#' + entry.position);
+        pieces.push(entry.promptId || 'prompt');
+        pieces.push(entry.status || 'queued');
+        pieces.push('by ' + owner);
+        label.textContent = pieces.join(' · ');
+        header.appendChild(label);
+
+        if (entry.submittedBy && entry.submittedBy.id === participantId) {
+          const cancelButton = document.createElement('button');
+          cancelButton.type = 'button';
+          cancelButton.className = 'secondary';
+          cancelButton.dataset.promptId = entry.promptId || '';
+          cancelButton.dataset.action = 'cancel-queued';
+          cancelButton.textContent = 'Cancel';
+          header.appendChild(cancelButton);
+        }
+
+        item.appendChild(header);
+
+        const body = document.createElement('div');
+        body.className = 'queue-text';
+        body.textContent = entry.text || '';
+        item.appendChild(body);
+
+        queueListEl.appendChild(item);
+      }
+    }
+
+    async function refreshQueue() {
+      const res = await fetch(queueApiBase + '/queue', {
+        headers: requestHeaders(),
+      });
+      queueState = normalizeQueueSnapshot(await readJSONResponse(res, 'load queue'));
+      renderQueue();
+    }
+
+    function scheduleQueueRefresh() {
+      if (queueRefreshTimer !== null) return;
+      queueRefreshTimer = window.setTimeout(async () => {
+        queueRefreshTimer = null;
+        try {
+          await refreshQueue();
+        } catch (err) {
+          queueSummaryEl.textContent = err.message || String(err);
+        }
+      }, 75);
+    }
+
+    async function cancelQueuedPrompt(promptId) {
+      if (!promptId) return;
+      const res = await fetch(queueApiBase + '/queue/' + encodeURIComponent(promptId), {
+        method: 'DELETE',
+        headers: requestHeaders(),
+      });
+      if (!res.ok && res.status !== 204) {
+        throw new Error('cancel queued prompt: ' + res.status + ' ' + ((await res.text()).trim() || 'request failed'));
+      }
+      scheduleQueueRefresh();
+    }
+
+    async function clearMyQueue() {
+      const res = await fetch(queueApiBase + '/queue:clear-mine', {
+        method: 'POST',
+        headers: requestHeaders(),
+      });
+      const body = await readJSONResponse(res, 'clear my queue');
+      const removed = Array.isArray(body.removed) ? body.removed : [];
+      appendMessage('system', 'Queue', removed.length > 0 ? ('cleared ' + removed.join(', ')) : 'no queued prompts to clear');
+      scheduleQueueRefresh();
+    }
+
     statusEl.textContent = 'Connecting...';
     conn.onopen = () => {
       wsOpened = true;
       statusEl.textContent = 'Connected';
+      scheduleQueueRefresh();
     };
     conn.onclose = () => {
       if (!wsOpened) {
@@ -486,19 +653,23 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
       const msg = JSON.parse(event.data);
       switch (msg.type) {
         case 'connected':
-          appendMessage('system', 'Connected', 'Session <code>' + msg.sessionId + '</code>');
+          appendMessage('system', 'Connected', 'Session ' + (msg.sessionId || ''));
           break;
         case 'prompt_status':
           appendMessage('system', 'Prompt Status', (msg.promptId || 'prompt') + ' ' + (msg.status || '') + (msg.position ? ' (#' + msg.position + ')' : ''));
+          scheduleQueueRefresh();
           break;
         case 'queue_snapshot':
-          appendMessage('system', 'Queue', 'active=' + (msg.activePromptId || 'none') + ', queued=' + ((msg.entries || []).length));
+          queueState = normalizeQueueSnapshot(msg);
+          renderQueue();
           break;
         case 'queue_entry_removed':
           appendMessage('system', 'Queue', 'removed ' + (msg.promptId || '') + (msg.reason ? ' (' + msg.reason + ')' : ''));
+          scheduleQueueRefresh();
           break;
         case 'queue_cleared':
           appendMessage('system', 'Queue', 'cleared ' + ((msg.removed || []).join(', ') || 'no prompts'));
+          scheduleQueueRefresh();
           break;
         case 'user':
           appendMessage('system', 'User', msg.data || '');
@@ -520,6 +691,7 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
           break;
         case 'done':
           appendMessage('system', 'Done', 'Turn finished');
+          scheduleQueueRefresh();
           break;
         default:
           appendMessage('system', msg.type, event.data);
@@ -540,10 +712,33 @@ var appTemplate = template.Must(template.New("app").Parse(`<!doctype html>
       input.value = '';
     });
 
+    refreshQueueButton.addEventListener('click', async () => {
+      try {
+        await refreshQueue();
+      } catch (err) {
+        appendMessage('error', 'Queue', err.message || String(err));
+      }
+    });
+
+    clearMyQueueButton.addEventListener('click', async () => {
+      try {
+        await clearMyQueue();
+      } catch (err) {
+        appendMessage('error', 'Queue', err.message || String(err));
+      }
+    });
+
+    queueListEl.addEventListener('click', async (event) => {
+      const button = event.target.closest('button[data-action="cancel-queued"]');
+      if (!button) return;
+      try {
+        await cancelQueuedPrompt(button.dataset.promptId || '');
+      } catch (err) {
+        appendMessage('error', 'Queue', err.message || String(err));
+      }
+    });
+
     document.getElementById('delete-topic').addEventListener('click', async () => {
-      const topic = document.body.dataset.topic;
-      const workspace = document.body.dataset.workspace;
-      const namespace = document.body.dataset.namespace;
       if (!window.confirm('Delete topic "' + topic + '"?')) return;
       const res = await fetch('/apis/v1/namespaces/' + encodeURIComponent(namespace) + '/workspaces/' + encodeURIComponent(workspace) + '/topics/' + encodeURIComponent(topic), {
         method: 'DELETE'
