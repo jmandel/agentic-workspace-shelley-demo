@@ -459,3 +459,14 @@
 - `go test ./server -run 'TestWorkspace|TestEmitWorkspace' -v` in `shelley/`
 - `go test ./db ./server` in `shelley/`
 - `./test/smoke.sh` from the workspace root
+
+### 2026-03-10 update — follow-on protocol RFCs
+- Added three more RFC drafts to pin down the areas where Shelley implementation work is already forcing protocol choices:
+  - `0002-topic-realtime-wire-contract.md`
+  - `0003-workspace-tool-api-payloads.md`
+  - `0004-approval-workflow-semantics.md`
+- These are intentionally grounded in three inputs together:
+  - the draft protocol prose in `agentic-workspace/agent-workspace.md`
+  - the Bun reference implementation behavior in `reference-impl/`
+  - Shelley's own implementation pressure and surprises while building a compatible server
+- Deliberately did not write commits/files RFCs yet; those remain future-facing and less informed by the current interoperability slice.

@@ -10,3 +10,6 @@ Conventions:
 
 Current RFCs:
 - [0001-workspace-manager-runtime-handoff.md](./0001-workspace-manager-runtime-handoff.md)
+- [0002-topic-realtime-wire-contract.md](./0002-topic-realtime-wire-contract.md)
+- [0003-workspace-tool-api-payloads.md](./0003-workspace-tool-api-payloads.md)
+- [0004-approval-workflow-semantics.md](./0004-approval-workflow-semantics.md)
