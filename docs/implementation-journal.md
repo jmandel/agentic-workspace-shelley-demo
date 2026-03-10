@@ -661,3 +661,15 @@
     - trusted local bundles are a manager/runtime concern
     - MCP tools are the first-class workspace tool API story
 - I also made the narration clearer that stdio MCP runs inside the bubblewrapped runtime, typically via `npx`, rather than as a host-side subprocess outside isolation.
+
+### 2026-03-10 update — RFC for local tool catalog
+- Added `docs/rfcs/0005-local-tool-catalog.md`.
+- Decision captured there:
+  - trusted local runtime tools should not be modeled as opaque hidden manager strings
+  - the manager publishes a local tool catalog at `GET /apis/v1/local-tools`
+  - workspace configuration selects from that catalog with `runtime.localTools: [...]`
+  - workspace detail should expose the resolved local tool metadata back to clients
+- This keeps the demo simple without introducing a packaging standard:
+  - `fhir-validator` comes from the manager-published local tool catalog
+  - `hl7-jira` still comes from the workspace tools API as MCP
+- Updated `docs/demo-run-of-show.md` accordingly so the demo now explicitly starts with the manager catalog before workspace creation.

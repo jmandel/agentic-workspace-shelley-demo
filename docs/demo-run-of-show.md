@@ -110,6 +110,162 @@ We should not try to demonstrate every possible tool category in one story.
 In particular, approval-gated tools should be kept out of the mainline demo
 unless approval itself is the headline feature we want to emphasize.
 
+## API Calls In This Demo
+
+The demo should make one thing very clear:
+
+- `fhir-validator` is not created through the workspace tools API
+- `hl7-jira` is created through the workspace tools API
+
+The two setup paths are intentionally different.
+
+### 0. Inspect the manager's local tool catalog
+
+Before creating the workspace, the demo can show that the manager publishes the
+local runtime tools it knows how to provide.
+
+```http
+GET /apis/v1/local-tools
+```
+
+Expected result for the demo:
+
+- `fhir-validator`
+- optionally `ig-publisher`
+
+The point is that the string name is not opaque manager magic. The manager
+publishes what those names mean.
+
+### 1. Create the workspace and select local tools from the catalog
+
+This is a Shelley Manager call.
+
+It creates the isolated workspace, pre-creates the topic, and tells the manager
+which published local tools to enable in the runtime.
+
+```http
+POST /apis/v1/namespaces/acme/workspaces
+Content-Type: application/json
+
+{
+  "name": "bp-ig-fix",
+  "template": "acme-rpm-ig",
+  "topics": [
+    { "name": "bp-panel-validator" }
+  ],
+  "runtime": {
+    "localTools": ["fhir-validator"]
+  }
+}
+```
+
+Meaning:
+
+- `runtime.localTools` is manager-controlled runtime setup, not a workspace tool
+  registration surface
+- for the main demo, this is how `fhir-validator` becomes available inside the
+  bubblewrapped workspace
+- the manager should also write workspace guidance so Shelley knows that
+  `fhir-validator` is available through bash at a known path such as
+  `/tools/bin/fhir-validator`
+
+Optional extension:
+
+- add `"ig-publisher"` to the same `runtime.localTools` list if we want the
+  second-act publisher check
+
+### 2. Register the MCP tool through the workspace tools API
+
+This is a workspace runtime API call, exposed publicly through the manager.
+
+For the demo, only `hl7-jira` should be registered this way.
+
+```http
+POST /apis/v1/namespaces/acme/workspaces/bp-ig-fix/tools
+Content-Type: application/json
+
+{
+  "name": "hl7-jira",
+  "description": "Search HL7 Jira fixture data",
+  "provider": "demo@acme.example",
+  "protocol": "mcp",
+  "transport": {
+    "type": "stdio",
+    "command": "npx",
+    "args": ["-y", "@acme-demo/hl7-jira-mcp"]
+  },
+  "tools": [
+    {
+      "name": "jira.search",
+      "title": "Search HL7 Jira",
+      "description": "Search HL7 Jira issues related to FHIR validator behavior",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string" }
+        },
+        "required": ["query"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}
+```
+
+Meaning:
+
+- this is the first-class workspace tool path
+- `hl7-jira` should show up to Shelley as a managed `workspace_*` tool
+- stdio MCP runs inside the bubblewrapped workspace runtime
+- the typical demo configuration should use `npx`
+
+### 3. Grant the agent access to the MCP tool
+
+This is also a workspace runtime API call, exposed through the manager.
+
+```http
+POST /apis/v1/namespaces/acme/workspaces/bp-ig-fix/tools/hl7-jira/grants
+Content-Type: application/json
+
+{
+  "subject": "agent:*",
+  "tools": ["jira.search"],
+  "access": "allowed",
+  "approvers": [],
+  "scope": {}
+}
+```
+
+Meaning:
+
+- the agent can use `jira.search` without per-call approval
+- this is the only tool grant needed for the mainline demo
+
+### What Is Not Called In The Mainline Demo
+
+These should not be set up through `POST /tools` for the main demo:
+
+- `fhir-validator`
+- optional `ig-publisher`
+
+Reason:
+
+- they are trusted local runtime capabilities, not managed workspace API tools
+- Shelley should use them through bash based on workspace guidance, not through
+  the first-class MCP tool path
+
+### Optional Approval Extension
+
+If we later do a separate approval-focused extension, then a tool like
+`publish-preview` should be added through the tools API and granted separately.
+
+That flow would be:
+
+1. `POST /apis/v1/namespaces/acme/workspaces/bp-ig-fix/tools`
+2. `POST /apis/v1/namespaces/acme/workspaces/bp-ig-fix/tools/publish-preview/grants`
+
+with `access: "approval_required"`.
+
 ## Tools In The Demo
 
 ### `fhir-validator`
