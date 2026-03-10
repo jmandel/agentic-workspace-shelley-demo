@@ -17,6 +17,15 @@ import (
 	"time"
 )
 
+const (
+	bwrapSandboxRoot      = "/sandbox"
+	bwrapSandboxBinary    = "/sandbox/bin/shelley"
+	bwrapSandboxConfig    = "/sandbox/config/shelley.json"
+	bwrapSandboxWorkspace = "/sandbox/workspace"
+	bwrapSandboxDB        = "/sandbox/shelley.db"
+	bwrapSandboxHome      = "/sandbox/home"
+)
+
 type CommandLauncher struct {
 	Mode            string
 	StateRoot       string
@@ -68,6 +77,17 @@ func (l CommandLauncher) Launch(ctx context.Context, spec LaunchSpec) (*Runtime,
 	}
 	if err := os.MkdirAll(spec.StateDir, 0o755); err != nil {
 		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Join(spec.StateDir, "tmp"), 0o755); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Join(spec.StateDir, "home"), 0o755); err != nil {
+		return nil, err
+	}
+	if mode == "bwrap" {
+		if err := l.prepareBwrapState(spec); err != nil {
+			return nil, err
+		}
 	}
 
 	logFilePath := filepath.Join(spec.StateDir, "runtime.log")
@@ -149,7 +169,7 @@ func (l CommandLauncher) buildProcessCommand(spec LaunchSpec, hostPort int) (*ex
 	if strings.TrimSpace(l.ShelleyBinary) == "" {
 		return nil, errors.New("shelley binary required for process mode")
 	}
-	args := l.shelleyArgs(spec.DBPath, spec.WorkspaceDir, hostPort)
+	args := l.shelleyArgs(spec.DBPath, spec.WorkspaceDir, hostPort, l.ConfigPath)
 	cmd := exec.Command(l.ShelleyBinary, args...)
 	cmd.Env = append(os.Environ(), "WORKSPACE_NAME="+spec.Name)
 	return cmd, nil
@@ -184,7 +204,7 @@ func (l CommandLauncher) buildDockerCommand(spec LaunchSpec, hostPort int) (*exe
 	if entrypoint != "" {
 		args = append(args, entrypoint)
 	}
-	args = append(args, l.shelleyArgs(filepath.Join(containerState, "shelley.db"), containerWorkspace, hostPort)...)
+	args = append(args, l.shelleyArgs(filepath.Join(containerState, "shelley.db"), containerWorkspace, hostPort, l.ConfigPath)...)
 	return exec.Command(dockerBin, args...), nil
 }
 
@@ -197,29 +217,36 @@ func (l CommandLauncher) buildBwrapCommand(spec LaunchSpec, hostPort int) (*exec
 		bwrap = "bwrap"
 	}
 	args := []string{
-		"--bind", "/", "/",
-		"--dev", "/dev",
-		"--proc", "/proc",
+		"--die-with-parent",
 		"--unshare-pid",
 		"--unshare-uts",
 		"--unshare-ipc",
 		"--share-net",
-		"--chdir", spec.WorkspaceDir,
-		"--setenv", "WORKSPACE_NAME", spec.Name,
-		"--",
-		l.ShelleyBinary,
 	}
-	args = append(args, l.shelleyArgs(spec.DBPath, spec.WorkspaceDir, hostPort)...)
+	args = append(args, l.bwrapRuntimeFSArgs(spec)...)
+	args = append(args,
+		"--bind", spec.StateDir, bwrapSandboxRoot,
+		"--bind", filepath.Join(spec.StateDir, "tmp"), "/tmp",
+		"--dev", "/dev",
+		"--proc", "/proc",
+		"--chdir", bwrapSandboxWorkspace,
+		"--setenv", "WORKSPACE_NAME", spec.Name,
+		"--setenv", "HOME", bwrapSandboxHome,
+		"--setenv", "TMPDIR", "/tmp",
+		"--",
+		bwrapSandboxBinary,
+	)
+	args = append(args, l.shelleyArgs(bwrapSandboxDB, bwrapSandboxWorkspace, hostPort, l.bwrapConfigPath(spec))...)
 	return exec.Command(bwrap, args...), nil
 }
 
-func (l CommandLauncher) shelleyArgs(dbPath, workspaceDir string, hostPort int) []string {
+func (l CommandLauncher) shelleyArgs(dbPath, workspaceDir string, hostPort int, configPath string) []string {
 	args := make([]string, 0, 16)
 	if l.DebugRuntime {
 		args = append(args, "-debug")
 	}
-	if l.ConfigPath != "" {
-		args = append(args, "-config", l.ConfigPath)
+	if configPath != "" {
+		args = append(args, "-config", configPath)
 	}
 	if l.PredictableOnly {
 		args = append(args, "-predictable-only")
@@ -323,4 +350,79 @@ func (l CommandLauncher) WorkspacePaths(namespace, name string) (LaunchSpec, err
 		WorkspaceDir: filepath.Join(base, "workspace"),
 		DBPath:       filepath.Join(base, "shelley.db"),
 	}, nil
+}
+
+func (l CommandLauncher) prepareBwrapState(spec LaunchSpec) error {
+	binDir := filepath.Join(spec.StateDir, "bin")
+	configDir := filepath.Join(spec.StateDir, "config")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		return err
+	}
+	if err := copyFile(l.ShelleyBinary, filepath.Join(binDir, "shelley"), 0o755); err != nil {
+		return fmt.Errorf("copy shelley binary into bwrap state: %w", err)
+	}
+	if l.ConfigPath != "" {
+		if err := copyFile(l.ConfigPath, filepath.Join(configDir, "shelley.json"), 0o644); err != nil {
+			return fmt.Errorf("copy config into bwrap state: %w", err)
+		}
+	}
+	return nil
+}
+
+func (l CommandLauncher) bwrapRuntimeFSArgs(spec LaunchSpec) []string {
+	paths := []string{"/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt"}
+	args := make([]string, 0, len(paths)*2+8)
+	args = append(args, "--dir", bwrapSandboxRoot)
+	for _, p := range paths {
+		fsArgs, ok := bwrapMountArgsForPath(p)
+		if ok {
+			args = append(args, fsArgs...)
+		}
+	}
+	return args
+}
+
+func (l CommandLauncher) bwrapConfigPath(spec LaunchSpec) string {
+	if l.ConfigPath == "" {
+		return ""
+	}
+	return bwrapSandboxConfig
+}
+
+func bwrapMountArgsForPath(src string) ([]string, bool) {
+	info, err := os.Lstat(src)
+	if err != nil {
+		return nil, false
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(src)
+		if err != nil {
+			return nil, false
+		}
+		return []string{"--symlink", target, src}, true
+	}
+	return []string{"--ro-bind", src, src}, true
+}
+
+func copyFile(src, dst string, perm os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = out.Close()
+	}()
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Close()
 }

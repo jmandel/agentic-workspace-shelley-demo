@@ -69,12 +69,15 @@ func TestBuildBwrapCommand(t *testing.T) {
 	}
 	got := strings.Join(cmd.Args, " ")
 	for _, want := range []string{
-		"--bind / /",
+		"--die-with-parent",
+		"--ro-bind /usr /usr",
+		"--bind " + spec.StateDir + " /sandbox",
+		"--bind " + filepath.Join(spec.StateDir, "tmp") + " /tmp",
 		"--share-net",
 		"--setenv WORKSPACE_NAME demo",
-		"-- /usr/local/bin/shelley",
-		"-db " + spec.DBPath,
-		"serve -port 43123 -workspace-dir " + spec.WorkspaceDir + " -socket none",
+		"-- /sandbox/bin/shelley",
+		"-db /sandbox/shelley.db",
+		"serve -port 43123 -workspace-dir /sandbox/workspace -socket none",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected bwrap args to contain %q, got %q", want, got)

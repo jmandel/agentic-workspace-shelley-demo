@@ -553,3 +553,27 @@
   - creates a workspace via `POST /apis/v1/namespaces/{ns}/workspaces`
   - verifies proxied files and tools through the public manager routes
   - runs the Bun CLI through manager `/workspaces` discovery and public proxied websocket traffic
+
+### 2026-03-10 update — tightened `bwrap` isolation
+- Reworked the `bwrap` launcher after looking at it from the filesystem-isolation angle.
+- The first cut only put Shelley in a new mount namespace while still exposing the host root directly; that was not good enough.
+- Current `bwrap` shape:
+  - one per-workspace host root is created under manager state
+  - that root is mounted into the sandbox at `/sandbox`
+  - Shelley runs from a copied binary inside `/sandbox/bin/shelley`
+  - workspace files, DB, temp dir, and home dir all live under `/sandbox`
+  - host system directories like `/usr`, `/bin`, `/lib*`, and `/etc` are mounted read-only only as needed for execution
+  - `/tmp` inside the sandbox is bound to the workspace-local temp dir under manager state
+- Result:
+  - writes inside the workspace root work
+  - writes to `/tmp` stay inside the workspace-local sandbox temp
+  - the host filesystem outside the mounted workspace/state root is not used as a writable surface by the runtime
+
+### Validation update — live `bwrap` smoke
+- `SMOKE_RUNTIME_MODE=bwrap ./test/smoke.sh`
+  - passed end to end
+  - manager created a Shelley workspace in `bwrap` mode
+  - Bun CLI connected and chatted through the manager websocket proxy
+  - a predictable `bash:` turn wrote `bwrap-inside.txt` inside the mounted workspace
+  - the same turn wrote `/tmp/<name>` only inside the sandbox-local temp dir
+  - confirmed the corresponding host `/tmp/<name>` path was untouched

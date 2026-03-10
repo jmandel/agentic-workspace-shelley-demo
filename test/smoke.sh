@@ -7,12 +7,15 @@ AW_DIR="$ROOT_DIR/agentic-workspace/reference-impl"
 TMPDIR="$(mktemp -d)"
 MANAGER_PORT_FILE="$TMPDIR/manager-port"
 MANAGER_NAMESPACE="acme"
+RUNTIME_MODE="${SMOKE_RUNTIME_MODE:-process}"
 WORKSPACE_NAME="smoke-workspace"
 RESPONSE_TEXT="workspace-smoke-response-123"
 FILE_DIR=".workspace-smoke-$RANDOM"
 FILE_PATH="$FILE_DIR/note.txt"
 TOOL_NAME="smoke-tool-$RANDOM"
 WORKSPACE_ROOT="$TMPDIR/manager-state/$MANAGER_NAMESPACE/$WORKSPACE_NAME/workspace"
+BWRAP_TMP_NAME="manager-bwrap-$RANDOM"
+BWRAP_HOST_TMP="/tmp/$BWRAP_TMP_NAME"
 MANAGER_PID=""
 CLI_PID=""
 CLI_BUFFER=""
@@ -119,7 +122,7 @@ log "Installing Bun workspace client dependencies"
   bun install
 )
 
-log "Starting shelleymanager in predictable process-launch mode"
+log "Starting shelleymanager in predictable $RUNTIME_MODE-launch mode"
 (
   cd "$ROOT_DIR"
   "$TMPDIR/shelleymanager" \
@@ -127,7 +130,7 @@ log "Starting shelleymanager in predictable process-launch mode"
     -port-file "$MANAGER_PORT_FILE" \
     -state-dir "$TMPDIR/manager-state" \
     -namespace "$MANAGER_NAMESPACE" \
-    -runtime-mode process \
+    -runtime-mode "$RUNTIME_MODE" \
     -shelley-binary "$TMPDIR/shelley" \
     -predictable-only \
     -default-model predictable \
@@ -192,6 +195,12 @@ log "Running real Bun CLI against shelleymanager"
   read_cli_until "thinking..." "cli.ts saw live workspace system update"
   read_cli_until "$RESPONSE_TEXT" "cli.ts received agent response"
 
+  if [[ "$RUNTIME_MODE" == "bwrap" ]]; then
+    printf 'bash: touch bwrap-inside.txt && touch /tmp/%s && echo bwrap-ok\n' "$BWRAP_TMP_NAME" >&3
+    read_cli_until "[tool]" "cli.ts saw a bash tool invocation under bwrap"
+    read_cli_until "---" "cli.ts completed the bwrap bash turn"
+  fi
+
   printf '/quit\n' >&3
   read_cli_until "Disconnected." "cli.ts disconnected cleanly"
   exec 3>&-
@@ -208,5 +217,26 @@ CLI_TOPICS_OUTPUT="$(
   WS_MANAGER="http://localhost:$PORT" bun run cli.ts topics "$WORKSPACE_NAME"
 )"
 require_output "$CLI_TOPICS_OUTPUT" "smoke-topic" "cli.ts topics lists the connected topic"
+
+if [[ "$RUNTIME_MODE" == "bwrap" ]]; then
+  log "Checking bwrap filesystem isolation"
+  if [[ ! -f "$WORKSPACE_ROOT/bwrap-inside.txt" ]]; then
+    printf '  ✗ expected bwrap-inside.txt inside managed workspace\n'
+    exit 1
+  fi
+  printf '  ✓ bash tool can write inside the mounted workspace root\n'
+
+  if [[ -e "$BWRAP_HOST_TMP" ]]; then
+    printf '  ✗ host tmp marker unexpectedly exists outside bwrap sandbox\n'
+    exit 1
+  fi
+  printf '  ✓ host tmp outside the mounted workspace root was not touched\n'
+
+  if [[ ! -e "$TMPDIR/manager-state/$MANAGER_NAMESPACE/$WORKSPACE_NAME/tmp/$BWRAP_TMP_NAME" ]]; then
+    printf '  ✗ expected sandbox tmp file inside workspace state tmp\n'
+    exit 1
+  fi
+  printf '  ✓ bwrap /tmp is sandbox-local under the workspace state root\n'
+fi
 
 log "Smoke test passed"
