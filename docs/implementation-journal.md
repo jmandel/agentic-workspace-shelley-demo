@@ -359,6 +359,11 @@
 - stdio MCP workspace tool executes successfully and returns text content
 - streamable HTTP MCP workspace tool executes successfully and returns text plus structured-content fallback
 - invalid non-object wrapper input is rejected before calling MCP
+- streamable HTTP MCP workspace tool is exercised through a real Shelley topic turn, not just by calling the runtime tool directly
+
+### Small fixture improvement during MCP testing
+- Extended the predictable model test fixture with `workspace_tool_json: <tool> <action> <json>` so end-to-end topic tests can drive a workspace tool call with structured wrapper input.
+- Also fixed the shared `sendTopicAPIChat` test helper to JSON-encode request bodies instead of interpolating raw strings, which avoids breaking tests when prompts contain quotes.
 
 ### Validation update — MCP workspace tools checkpoint
 - `go test ./server -run 'TestWorkspaceToolMCP|TestWorkspaceToolCallsAreLogged|TestWorkspaceToolApproval' -v` in `shelley/`
