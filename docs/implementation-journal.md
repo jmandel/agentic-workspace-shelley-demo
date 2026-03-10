@@ -490,3 +490,12 @@
 - `0002-topic-realtime-wire-contract.md` and `0004-approval-workflow-semantics.md` no longer let clients self-assert `approver` inside `approval_response`.
   - the client now sends only the decision payload
   - the runtime binds that decision to the authenticated caller and emits the approver identity only in server-originated events / audit records
+
+### 2026-03-10 update — RFC 0001 deferred
+- Removed `0001-workspace-manager-runtime-handoff.md` from the active RFC set.
+- Reason:
+  - the manager/runtime handoff question is real, but it is not on the current critical path for Shelley interoperability work
+  - the more immediate protocol pressure is in topic realtime behavior, tool payloads, and approval semantics
+- Kept the current implementation bias:
+  - do not force the manager to proxy all runtime traffic
+  - but do not spend more spec surface on that question until it becomes blocking
