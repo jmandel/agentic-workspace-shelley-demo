@@ -6,6 +6,7 @@ SHELLEY_DIR="$ROOT_DIR/shelley"
 AW_DIR="$ROOT_DIR/agentic-workspace/reference-impl"
 TMPDIR="$(mktemp -d)"
 PORT_FILE="$TMPDIR/port"
+WORKSPACE_ROOT="$TMPDIR/workspace"
 WORKSPACE_NAME="smoke-workspace"
 RESPONSE_TEXT="workspace-smoke-response-123"
 FILE_DIR=".workspace-smoke-$RANDOM"
@@ -115,6 +116,7 @@ log "Starting Shelley in predictable workspace mode"
     serve \
     -port 0 \
     -port-file "$PORT_FILE" \
+    -workspace-dir "$WORKSPACE_ROOT" \
     >"$TMPDIR/shelley.log" 2>&1
 ) &
 SERVER_PID=$!
@@ -134,6 +136,8 @@ log "Checking workspace file endpoints"
 curl -sf -X PUT --data-binary 'workspace file body' "http://localhost:$PORT/ws/files/$FILE_PATH" >/dev/null
 FILE_BODY="$(curl -sf "http://localhost:$PORT/ws/files/$FILE_PATH")"
 require_output "$FILE_BODY" "workspace file body" "GET /ws/files/{path} reads file content"
+HOST_FILE_BODY="$(cat "$WORKSPACE_ROOT/$FILE_PATH")"
+require_output "$HOST_FILE_BODY" "workspace file body" "--workspace-dir roots file writes in the configured directory"
 
 DIR_JSON="$(curl -sf "http://localhost:$PORT/ws/files/$FILE_DIR")"
 require_output "$DIR_JSON" "$FILE_PATH" "GET /ws/files/{path} lists directories"

@@ -308,3 +308,25 @@
 - `go test ./server -run 'TestWorkspaceTools|TestWorkspaceFiles|TestWorkspace|TestEmitWorkspace'` in `shelley/`
 - `go test ./db ./server` in `shelley/`
 - `./test/smoke.sh` from the workspace root
+
+### 2026-03-10 update — `--workspace-dir`
+- Implemented `serve --workspace-dir <path>` in Shelley.
+- The configured workspace root now drives three things together instead of only the file API:
+  - `/ws/files/...`
+  - default per-conversation tool working directory
+  - initial `cwd` for new topic-backed conversations created through workspace routes
+- This closes one of the larger remaining drifts from the updated plan. Workspace mode no longer has to piggyback on the server process cwd to define its filesystem root.
+
+### Validation added for workspace root
+- Added server test coverage proving a workspace-created topic conversation persists its `cwd` as the configured workspace root.
+- Extended the smoke script to launch Shelley with `serve --workspace-dir "$TMPDIR/workspace"` and verify file writes land in that host directory.
+
+### Remaining limitation after this slice
+- Existing non-topic Shelley conversations are still just Shelley conversations; there is still no first-class workspace table or multi-workspace server mode.
+- `--workspace-dir` makes the single running Shelley process's workspace root explicit, but does not yet add cloning/snapshot/rollback semantics.
+
+### Validation update — workspace root checkpoint
+- `go test ./server -run 'TestWorkspaceTools|TestWorkspaceFiles|TestWorkspace|TestEmitWorkspace'` in `shelley/`
+- `go test ./db ./server` in `shelley/`
+- `./test/smoke.sh` from the workspace root
+  - now launches Shelley with `--workspace-dir`
