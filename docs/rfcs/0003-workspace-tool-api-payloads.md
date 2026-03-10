@@ -1,146 +1,332 @@
 # RFC 0003: Workspace Tool API Payloads
 
-- Status: draft
+- Status: proposed
 - Date: 2026-03-10
 
 ## Summary
 
-The draft spec defines tool concepts and routes, but not the concrete request
-and response payloads for connecting tools, listing them, inspecting them, or
-granting access.
+This RFC settles the demo-ready hosted tool API.
 
-This RFC proposes a practical workspace tool payload model that:
-- keeps the draft's workspace-scoped tool resources
-- reconciles the draft's registry concept with self-contained hosted
-  registrations
-- standardizes action metadata and transport config
+It defines:
+- exact payloads for `POST /tools`, `GET /tools`, and `GET /tools/{tool}`
+- exact payloads for grant creation
+- the canonical MCP transport shapes for `stdio` and `streamable_http`
+- how shorthand `actions` and rich `actionDefs` relate
 
-## Context
+For the demo, the hosted workspace tool API is the source of truth. Remote MCP
+tool discovery is explicitly out of scope.
 
-The draft already says:
-- tools are first-class resources
-- tools may come from a broader registry
-- tools are connected to a workspace with provider identity and grants
+## Resource Model
 
-The Bun reference implementation does not implement `/tools` at all, so it does
-not answer payload questions.
+For the demo contract, one workspace tool resource is one connected tool
+binding.
 
-Shelley has already had to make concrete choices here:
-- a workspace-hosted `POST /tools`
-- persisted tool bindings
-- grants as child resources
-- action metadata richer than a plain string list, because the runtime needs
-  descriptions and input schemas to expose usable model tools
-- transport config that must distinguish MCP stdio from streamable HTTP
+Canonical identity:
+- `name` is the tool identifier within one workspace
 
-## Decision
+The contract does not introduce a separate opaque `toolId` yet.
 
-### Resource model
+## Routes
 
-The public workspace-level resource is a connected tool binding.
+```text
+GET    /tools
+POST   /tools
+GET    /tools/{tool}
+DELETE /tools/{tool}
+POST   /tools/{tool}/grants
+DELETE /tools/{tool}/grants/{grantId}
+```
 
-It may be created from:
-- a registry reference
-- or an inline/self-contained tool definition
+These routes are relative to the workspace runtime base.
 
-Responses should normalize to the same full connected-tool shape regardless of
-how the binding was created.
+## Tool Create Request
 
-### Connect tool request
+### Required fields
 
-The connect request should support this normalized shape:
+`POST /tools` must accept:
 
 ```json
 {
-  "tool": "gmail",
+  "name": "github",
+  "description": "GitHub repository operations",
   "provider": "alice@acme.com",
-  "description": "Read, search, and send Gmail",
-  "protocol": {
-    "type": "mcp",
-    "transport": {
-      "type": "streamable_http",
-      "endpoint": "https://gmail-mcp.example.com"
-    }
+  "protocol": "mcp",
+  "transport": {
+    "type": "stdio",
+    "command": "uvx",
+    "args": ["mcp-server-github"],
+    "env": {}
+  },
+  "actions": ["repo.read", "pr.create"]
+}
+```
+
+Required fields:
+- `name`
+- `protocol`
+- `transport`
+- either `actions` or `actionDefs`
+
+For the demo, `protocol` must be `"mcp"`.
+
+### Rich action form
+
+If richer action metadata is available, clients should send:
+
+```json
+{
+  "name": "github",
+  "description": "GitHub repository operations",
+  "provider": "alice@acme.com",
+  "protocol": "mcp",
+  "transport": {
+    "type": "streamable_http",
+    "url": "https://github-mcp.example.com",
+    "headers": {}
   },
   "actionDefs": [
     {
-      "name": "read",
-      "description": "Read a message",
-      "inputSchema": { "type": "object" }
+      "name": "repo.read",
+      "description": "Read repository metadata and files",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "repo": { "type": "string" },
+          "path": { "type": "string" }
+        },
+        "required": ["repo"],
+        "additionalProperties": false
+      }
     },
     {
-      "name": "send",
-      "description": "Send a message",
-      "inputSchema": { "type": "object" }
+      "name": "pr.create",
+      "description": "Create a pull request",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "repo": { "type": "string" },
+          "title": { "type": "string" }
+        },
+        "required": ["repo", "title"],
+        "additionalProperties": false
+      }
     }
-  ],
-  "credentialRef": "secret://gmail/alice",
+  ]
+}
+```
+
+Rules:
+- `actions` and `actionDefs` may both be sent, but if both are present they
+  must agree on action names
+- `actionDefs[].name` is required
+- `actionDefs[].inputSchema`, when present, must be a JSON Schema object
+- `description`, `provider`, and `credentialRef` are optional for the demo
+
+### Optional fields
+
+Optional create fields:
+
+```json
+{
+  "credentialRef": "secret://github/alice",
   "config": {}
 }
 ```
 
-Notes:
-- `tool` is the stable tool name or registry reference
-- `actionDefs` is the canonical rich action shape
-- plain string `actions` may still be accepted as a shorthand for compatibility,
-  but responses should normalize to rich action definitions
-- `protocol` is a typed object, not a free-form string plus opaque config blob
+Meaning:
+- `credentialRef` is an opaque reference for runtime-specific secret lookup
+- `config` is an escape hatch for provider-specific non-transport options
 
-### Connected tool response
+The canonical transport definition still lives under `transport`.
 
-The canonical connected tool response should include:
-- `toolId`
-- `tool`
-- `provider`
-- `description`
-- `protocol`
-- `actionDefs`
-- `credentialRef` or equivalent reference
-- `status`
-- `createdAt`
-- `grants`
+## Transport Union
 
-Optional operational fields may include:
-- `lastCheckedAt`
-- `lastError`
-- `log`
-
-### Grant payloads
-
-Grant creation remains a child resource under `/tools/{tool}/grants`.
-
-The payload should look like:
+### MCP stdio
 
 ```json
 {
-  "subject": "agent:claude",
-  "actions": ["read"],
+  "type": "stdio",
+  "command": "uvx",
+  "args": ["mcp-server-github"],
+  "env": {
+    "GITHUB_TOKEN": "${secret://github/alice}"
+  }
+}
+```
+
+Required:
+- `type`
+- `command`
+
+Optional:
+- `args`
+- `env`
+- `cwd`
+
+### MCP streamable HTTP
+
+```json
+{
+  "type": "streamable_http",
+  "url": "https://github-mcp.example.com",
+  "headers": {
+    "Authorization": "Bearer ${secret://github/alice}"
+  }
+}
+```
+
+Required:
+- `type`
+- `url`
+
+Optional:
+- `headers`
+
+The demo contract supports exactly these two MCP transport types.
+
+## Tool Response Shape
+
+`POST /tools` returns the same full object shape as `GET /tools/{tool}`.
+
+### Summary shape
+
+`GET /tools` returns a list of summary objects:
+
+```json
+[
+  {
+    "name": "github",
+    "description": "GitHub repository operations",
+    "provider": "alice@acme.com",
+    "protocol": "mcp",
+    "transport": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["mcp-server-github"],
+      "env": {}
+    },
+    "actions": ["repo.read", "pr.create"],
+    "actionDefs": [
+      { "name": "repo.read", "description": "Read repository metadata and files" },
+      { "name": "pr.create", "description": "Create a pull request" }
+    ],
+    "status": "ready",
+    "createdAt": "2026-03-10T12:00:00Z"
+  }
+]
+```
+
+### Detail shape
+
+`GET /tools/{tool}` returns the full tool object:
+
+```json
+{
+  "name": "github",
+  "description": "GitHub repository operations",
+  "provider": "alice@acme.com",
+  "protocol": "mcp",
+  "transport": {
+    "type": "stdio",
+    "command": "uvx",
+    "args": ["mcp-server-github"],
+    "env": {}
+  },
+  "actions": ["repo.read", "pr.create"],
+  "actionDefs": [
+    {
+      "name": "repo.read",
+      "description": "Read repository metadata and files",
+      "inputSchema": {
+        "type": "object"
+      }
+    },
+    {
+      "name": "pr.create",
+      "description": "Create a pull request",
+      "inputSchema": {
+        "type": "object"
+      }
+    }
+  ],
+  "credentialRef": "secret://github/alice",
+  "config": {},
+  "status": "ready",
+  "createdAt": "2026-03-10T12:00:00Z",
+  "grants": [
+    {
+      "grantId": "g_123",
+      "subject": "agent:*",
+      "actions": ["repo.read"],
+      "access": "allowed",
+      "approvers": [],
+      "scope": {}
+    }
+  ],
+  "log": []
+}
+```
+
+Rules:
+- responses always include both `actions` and `actionDefs`
+- if the request only provided `actions`, the server must synthesize minimal
+  `actionDefs` using those names
+- `status` for the demo may be:
+  - `ready`
+  - `unreachable`
+  - `error`
+
+## Grant Create Request
+
+`POST /tools/{tool}/grants` accepts:
+
+```json
+{
+  "subject": "agent:*",
+  "actions": ["repo.read"],
   "access": "allowed",
   "approvers": [],
   "scope": {}
 }
 ```
 
-This RFC does not try to solve subject grammar or approval semantics; those are
-covered by separate RFCs.
+Rules:
+- `subject` is required
+- `actions` must be a non-empty subset of the tool's registered actions
+- `access` must be one of:
+  - `allowed`
+  - `approval_required`
+- if `access` is `approval_required`, `approvers` must be non-empty
 
-## Consequences
+Response shape:
 
-Benefits:
-- makes tool payloads interoperable across runtimes
-- gives model-facing runtimes the metadata they need to expose useful tools
-- keeps the door open for registry-backed tools without requiring a registry for
-  every implementation
+```json
+{
+  "grantId": "g_123",
+  "subject": "agent:*",
+  "actions": ["repo.read"],
+  "access": "allowed",
+  "approvers": [],
+  "scope": {},
+  "createdAt": "2026-03-10T12:01:00Z"
+}
+```
 
-Costs:
-- responses become richer than the current draft examples
-- runtimes must normalize shorthand action input into a stable richer form
+`POST /tools/{tool}/grants` returns that grant object directly.
 
-## Open Questions
+## Demo Guarantees
 
-- Should the canonical request require registry reference plus optional
-  overrides, or should fully inline tool definitions remain first-class?
-- Should `actionDefs` be mandatory in responses even if the request used plain
-  string `actions`?
-- Should transport-specific config live entirely inside `protocol.transport`, or
-  is a top-level `config` escape hatch still necessary?
+This RFC defines the demo guarantee as:
+- hosted REST registration is canonical
+- MCP `stdio` and `streamable_http` are the supported execution transports
+- action metadata is explicit enough to expose useful model-facing tools
+- grants and approval policy are configured through the hosted API
+
+## Non-Goals For This Contract
+
+Explicitly deferred:
+- registry sync or remote tool mirroring
+- opaque `toolId` separate from `name`
+- per-action output schema enforcement
+- secret-management standardization beyond opaque `credentialRef` and transport
+  placeholders

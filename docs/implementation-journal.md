@@ -577,3 +577,19 @@
   - a predictable `bash:` turn wrote `bwrap-inside.txt` inside the mounted workspace
   - the same turn wrote `/tmp/<name>` only inside the sandbox-local temp dir
   - confirmed the corresponding host `/tmp/<name>` path was untouched
+
+### 2026-03-10 update — demo-ready RFC contracts
+- Rewrote the three active protocol RFCs from exploratory drafts into concrete demo contracts:
+  - `0002-topic-realtime-wire-contract.md`
+  - `0003-workspace-tool-api-payloads.md`
+  - `0004-approval-workflow-semantics.md`
+- Main decisions now pinned:
+  - topic websocket replay is defined around a live `sessionId` plus `since=<eventId>` catchup
+  - a no-`since` connect must replay the active turn and unresolved approvals
+  - the hosted tool API is the canonical source of truth for the demo
+  - tool payloads are fixed around hosted MCP registrations with `stdio` and `streamable_http`
+  - approval is websocket-first, first-valid-response-wins, and identity comes from auth context rather than client-declared approver fields
+- Explicitly deferred for the demo:
+  - durable replay across runtime restart
+  - registry sync / remote tool mirroring
+  - REST approval endpoints for offline approvers

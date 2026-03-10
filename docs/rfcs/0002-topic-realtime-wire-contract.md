@@ -1,128 +1,364 @@
 # RFC 0002: Topic Realtime Wire Contract
 
-- Status: draft
+- Status: proposed
 - Date: 2026-03-10
 
 ## Summary
 
-The draft spec defines topic ACP endpoints, but not the actual realtime wire
-contract used by clients and runtimes for topic participation.
+This RFC settles the demo-ready topic realtime contract.
 
-This RFC proposes a canonical topic realtime contract that:
-- stays close to the Bun reference implementation's message vocabulary
-- adds explicit prompt lifecycle events
-- adds ordered event metadata
-- requires late-join and reconnect support
+It defines:
+- exact client and server message shapes
+- ordered event metadata
+- prompt lifecycle events
+- approval events
+- reconnect/catchup behavior for an active topic session
 
-## Context
+It does not try to solve durable replay across runtime restart.
 
-Today the strongest "spec by example" is the Bun reference implementation:
-- `prompt` from client
-- `connected`, `text`, `tool_call`, `tool_update`, `done`, `error`, `system`
-  from server
+## Scope
 
-That is useful but incomplete:
-- it does not define reconnect or replay
-- it uses ad hoc `system` text for important state like queueing and thinking
-- it has no explicit approval messages
-- the checked-in Bun `test.ts` is stale relative to `wmlet.ts`, which is a sign
-  that the contract is not pinned tightly enough
+This contract applies to one topic websocket connection at a time, for example:
 
-Shelley has already run into these gaps:
-- prompt queueing needed an explicit protocol decision
-- approval-required tools needed websocket request/response messages
-- replay/catchup questions showed up immediately when comparing Shelley SSE with
-  the minimal Bun websocket
-
-## Decision
-
-### Topic realtime endpoints
-
-This RFC does not change the draft's endpoint model. It only defines what flows
-across the topic realtime connection once established.
-
-### Client to server messages
-
-The minimal canonical client message set is:
-
-```json
-{ "type": "prompt", "promptId": "p_123", "data": "your message here" }
-{ "type": "approval_response", "approvalId": "a_123", "approved": true, "reason": "Reviewed and approved" }
+```text
+wss://.../acp/{namespace}/{workspace}/topics/{topic}
 ```
 
-`promptId` should be client-generated or server-assigned, but it must become a
-stable handle for prompt lifecycle events.
+The same logical contract may also be exposed behind compatibility aliases.
 
-Approval identity must come from the authenticated connection context, not from
-an inline client-declared `approver` field. The runtime binds the approval
-response to the authenticated participant and emits that identity in subsequent
-server-originated events and audit records.
+## Session Model
 
-### Server to client messages
+Each active topic runtime has a `sessionId`.
 
-The canonical server message set is:
+Important meaning:
+- `sessionId` identifies one live topic runtime session
+- `eventId` ordering is only meaningful within one `sessionId`
+- if the runtime restarts and `sessionId` changes, old `eventId` values are no
+  longer resumable
 
-```json
-{ "type": "connected", "topic": "debug", "sessionId": "...", "protocolVersion": "v1" }
-{ "type": "prompt_status", "promptId": "p_123", "status": "accepted" }
-{ "type": "prompt_status", "promptId": "p_123", "status": "queued" }
-{ "type": "prompt_status", "promptId": "p_123", "status": "started" }
-{ "type": "text", "data": "response chunk" }
-{ "type": "tool_call", "toolCallId": "...", "title": "Read", "status": "pending" }
-{ "type": "tool_update", "toolCallId": "...", "status": "completed" }
-{ "type": "approval_request", "approvalId": "a_123", "tool": "github", "action": "repo.push" }
-{ "type": "approval_decision", "approvalId": "a_123", "approved": true, "approver": "alice@acme.com" }
-{ "type": "done" }
-{ "type": "error", "data": "error message" }
-{ "type": "system", "data": "human-readable informational text" }
+For the demo contract, replay is guaranteed only within the current live
+`sessionId`.
+
+## Connect and Replay
+
+### Connect request
+
+Clients connect normally, with an optional `since` query parameter:
+
+```text
+wss://.../topics/debug-timeout?since=e_42
 ```
 
-Notes:
-- `system` remains allowed, but it is no longer the only carrier for meaningful
-  state transitions like queueing
-- `approval_request` is promoted to a first-class message
-- `approval_decision` is emitted by the runtime after it binds the decision to
-  the authenticated actor
-- `done` terminates one prompt turn, not the websocket session
+Meaning:
+- if `since` is omitted, the server must send a bounded replay window for the
+  current active turn and any unresolved approval requests
+- if `since` is present, the server attempts to replay events strictly after
+  that event ID within the current `sessionId`
 
-### Event envelope
+### Replay window requirement
 
-All server-originated realtime messages except `connected` should carry:
+The runtime must retain an ordered in-memory replay window per active topic
+session.
+
+For the demo, that window must be large enough to cover:
+- the current in-flight prompt, if any
+- unresolved approval requests
+- recent events needed for a reconnecting or late-joining client to catch up to
+  the active turn
+
+The protocol does not yet require replay after runtime restart.
+
+If `since` cannot be fully honored because the requested event is no longer in
+the retained window, the server must:
+- replay from the oldest retained event it still has for that `sessionId`
+- set `replayTruncated: true`
+
+### First server message
+
+The server must send a `connected` message first:
+
+```json
+{
+  "type": "connected",
+  "protocolVersion": "demo-v1",
+  "topic": "debug-timeout",
+  "sessionId": "s_123",
+  "latestEventId": "e_88",
+  "replayRequestedSince": "e_42",
+  "replayFrom": "e_43",
+  "replayTruncated": false
+}
+```
+
+Field meanings:
+- `protocolVersion`: fixed as `demo-v1` for this contract
+- `latestEventId`: newest event known at connect time
+- `replayRequestedSince`: the client-supplied `since`, or `null`
+- `replayFrom`: the first event actually replayed after connect, or `null`
+- `replayTruncated`: `true` if the server could not honor the requested replay
+  point and started from a later retained event
+
+After `connected`, the server sends zero or more replayed events in order,
+followed by the live tail.
+
+Replayed events must carry `"replay": true`.
+
+## Client Messages
+
+### `prompt`
+
+Clients submit prompts with:
+
+```json
+{
+  "type": "prompt",
+  "promptId": "p_123",
+  "data": "Please debug the timeout"
+}
+```
+
+Rules:
+- `promptId` is required
+- `promptId` must be unique within the current topic session from that client
+- the runtime echoes the same `promptId` on all prompt-scoped events
+
+### `approval_response`
+
+Clients resolve approvals with:
+
+```json
+{
+  "type": "approval_response",
+  "approvalId": "a_123",
+  "decision": "approved",
+  "reason": "Reviewed and approved"
+}
+```
+
+Rules:
+- `decision` must be `approved` or `denied`
+- client messages must not include `approver`
+- the runtime derives approver identity from authenticated connection context
+
+## Server Event Envelope
+
+All server messages except `connected` must include:
 - `eventId`
 - `timestamp`
 
-This gives clients a stable ordering handle and creates a foundation for replay.
+Format:
 
-### Replay and reconnect
+```json
+{
+  "type": "text",
+  "eventId": "e_44",
+  "timestamp": "2026-03-10T12:00:01Z",
+  "replay": false,
+  "promptId": "p_123",
+  "data": "Looking into the timeout path now..."
+}
+```
 
-The protocol should support late joiners and reconnecting clients.
+Rules:
+- `eventId` is opaque but strictly ordered within one `sessionId`
+- `timestamp` is RFC3339 UTC
+- `replay` is `true` only for replayed events; it may be omitted or `false` for
+  live events
 
-This RFC pins one requirement but leaves room for implementation choice:
-- a topic realtime connection must allow a client to ask for events after a
-  known event ID
+## Server Messages
 
-The preferred shape is a connect-time parameter such as `since=<eventId>`, with
-replayed history delivered as normal ordered events before the live tail.
+### `prompt_status`
 
-This avoids putting transcript history into the `connected` payload itself.
+The runtime must emit prompt lifecycle updates:
 
-## Consequences
+```json
+{
+  "type": "prompt_status",
+  "eventId": "e_45",
+  "timestamp": "2026-03-10T12:00:02Z",
+  "promptId": "p_123",
+  "status": "accepted"
+}
+```
 
-Benefits:
-- keeps the simple reference-impl message vocabulary where it already works
-- makes queueing and approval semantics explicit
-- gives runtimes a path to reconnect and catchup behavior
-- reduces drift between implementations and tests
+Allowed `status` values for the demo:
+- `accepted`
+- `queued`
+- `started`
+- `cancelled`
 
-Costs:
-- requires runtimes to retain ordered event history, not just live fanout
-- adds more message types than the current Bun reference implementation
+Rules:
+- every prompt must produce `accepted`
+- prompts submitted while another prompt is active must also produce `queued`
+- when the runtime begins executing the prompt, it must emit `started`
 
-## Open Questions
+### `text`
 
-- Should prompt status use a dedicated `prompt_status` message as proposed here,
-  or should prompt lifecycle be folded into a more general event envelope?
-- Is `since=<eventId>` the right replay mechanism, or should the protocol
-  define a separate history bootstrap call?
-- Should `tool_update` remain status-only, or should a later RFC extend it with
-  typed result payloads?
+Assistant text is streamed as:
+
+```json
+{
+  "type": "text",
+  "eventId": "e_46",
+  "timestamp": "2026-03-10T12:00:03Z",
+  "promptId": "p_123",
+  "data": "I found the timeout path in the worker."
+}
+```
+
+For the demo, `data` is text-only.
+
+### `tool_call`
+
+Tool invocation start:
+
+```json
+{
+  "type": "tool_call",
+  "eventId": "e_47",
+  "timestamp": "2026-03-10T12:00:04Z",
+  "promptId": "p_123",
+  "toolCallId": "tc_123",
+  "tool": "bash",
+  "title": "bash",
+  "status": "pending"
+}
+```
+
+### `tool_update`
+
+Tool progress/result update:
+
+```json
+{
+  "type": "tool_update",
+  "eventId": "e_48",
+  "timestamp": "2026-03-10T12:00:05Z",
+  "promptId": "p_123",
+  "toolCallId": "tc_123",
+  "tool": "bash",
+  "status": "completed",
+  "data": "timeout path found"
+}
+```
+
+Rules:
+- `status` must be one of `running`, `completed`, or `failed`
+- `data` is optional text for the demo
+- structured or binary tool payloads are out of scope for this contract
+
+### `approval_request`
+
+Approval pause:
+
+```json
+{
+  "type": "approval_request",
+  "eventId": "e_49",
+  "timestamp": "2026-03-10T12:00:06Z",
+  "promptId": "p_123",
+  "approvalId": "a_123",
+  "toolCallId": "tc_124",
+  "tool": "github",
+  "action": "repo.push",
+  "approvers": ["alice@acme.com"],
+  "inputSummary": "push branch fix-timeout",
+  "expiresAt": "2026-03-10T12:05:06Z"
+}
+```
+
+### `approval_decision`
+
+Approval resolved:
+
+```json
+{
+  "type": "approval_decision",
+  "eventId": "e_50",
+  "timestamp": "2026-03-10T12:01:00Z",
+  "promptId": "p_123",
+  "approvalId": "a_123",
+  "toolCallId": "tc_124",
+  "decision": "approved",
+  "approver": "alice@acme.com",
+  "reason": "Reviewed and approved"
+}
+```
+
+Allowed `decision` values:
+- `approved`
+- `denied`
+- `timed_out`
+
+### `done`
+
+Prompt completion:
+
+```json
+{
+  "type": "done",
+  "eventId": "e_51",
+  "timestamp": "2026-03-10T12:01:05Z",
+  "promptId": "p_123",
+  "status": "completed"
+}
+```
+
+Allowed `status` values:
+- `completed`
+- `failed`
+- `cancelled`
+
+Every prompt must end with exactly one `done`.
+
+### `error`
+
+Prompt-scoped error:
+
+```json
+{
+  "type": "error",
+  "eventId": "e_52",
+  "timestamp": "2026-03-10T12:01:04Z",
+  "promptId": "p_123",
+  "data": "tool execution failed"
+}
+```
+
+For the demo:
+- `error` may appear before `done`
+- if `error` is emitted for a prompt, that prompt must still end with `done`
+  using `status: "failed"`
+
+### `system`
+
+Human-readable informational text:
+
+```json
+{
+  "type": "system",
+  "eventId": "e_53",
+  "timestamp": "2026-03-10T12:01:06Z",
+  "data": "client joined"
+}
+```
+
+`system` is allowed for informational text, but it must not be the only carrier
+for protocol state such as queueing, approvals, or prompt lifecycle.
+
+## Demo Guarantees
+
+This RFC defines the demo guarantee as:
+- multi-client live fanout on one topic
+- reconnect/catchup within one active `sessionId`
+- late joiners can see the current active turn and pending approvals through the
+  replay window
+- prompt lifecycle is explicit and machine-readable
+
+## Non-Goals For This Contract
+
+Explicitly deferred:
+- durable replay across runtime restart
+- full transcript bootstrap from websocket alone
+- image or binary content parts
+- multiplexing multiple topics over one websocket
