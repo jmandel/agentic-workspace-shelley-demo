@@ -215,6 +215,16 @@ textarea {
 
 .btn-sm { padding: 4px 8px; font-size: 12px; }
 
+.settings-trigger svg {
+  flex-shrink: 0;
+}
+
+.settings-trigger-icon {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+}
+
 /* ---- Flex helpers ---- */
 
 .row {
@@ -461,6 +471,41 @@ input[type="checkbox"] {
 
 .input-inline {
   max-width: 280px;
+}
+
+/* ---- Settings modal ---- */
+
+.settings-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.42);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 40;
+}
+
+.settings-modal {
+  width: min(520px, 100%);
+  box-shadow: var(--shadow);
+}
+
+.settings-modal-meta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--card-inset);
+  font-size: 13px;
+  align-items: center;
+}
+
+.settings-modal-label {
+  color: var(--muted);
+  font-weight: 500;
 }
 
 /* ---- Active turn bar ---- */

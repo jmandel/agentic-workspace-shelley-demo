@@ -1,8 +1,7 @@
 import { useEffect } from "react";
 import { useStore } from "@/store";
-import { AboutLink } from "@/components/AboutLink";
-import { ParticipantNameInput } from "@/components/ParticipantNameInput";
 import { CreateWorkspaceForm } from "@/components/CreateWorkspaceForm";
+import { PageMenu } from "@/components/PageMenu";
 import { WorkspaceCard } from "@/components/WorkspaceCard";
 
 export function HomePage() {
@@ -32,10 +31,7 @@ export function HomePage() {
       <div className="card">
         <div className="row row-between">
           <h1 style={{ margin: 0 }}>Workspace Manager</h1>
-          <div className="row" style={{ gap: 6 }}>
-            <ParticipantNameInput compact />
-            <AboutLink />
-          </div>
+          <PageMenu />
         </div>
       </div>
 

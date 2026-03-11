@@ -1,10 +1,9 @@
 import { useEffect, useState, useRef } from "react";
 import { Link, useParams, useLocation } from "wouter";
 import { useStore } from "@/store";
-import { AboutLink } from "@/components/AboutLink";
 import { MessageList } from "@/components/MessageList";
+import { PageMenu } from "@/components/PageMenu";
 import { QueuePanel } from "@/components/QueuePanel";
-import { ParticipantNameInput } from "@/components/ParticipantNameInput";
 import { workspaceFilesPageHref } from "@/navigation";
 import * as api from "@/api/client";
 
@@ -285,7 +284,7 @@ export function TopicPage() {
             <span className="topic-breadcrumb-current">{topic}</span>
           </div>
           <div className="row" style={{ gap: 6 }}>
-            <AboutLink />
+            <PageMenu />
             <span
               className="status-dot"
               data-status={connectionStatus}
@@ -298,11 +297,6 @@ export function TopicPage() {
         </div>
         <div className="topic-header-body">
           <div className="topic-controls">
-            <section className="topic-control-block">
-              <div className="topic-toolbar-label">Participant</div>
-              <ParticipantNameInput compact showLabel={false} />
-            </section>
-
             <section className="topic-control-block">
               <div className="topic-toolbar-label">Topic Actions</div>
               <div className="row" style={{ gap: 6 }}>

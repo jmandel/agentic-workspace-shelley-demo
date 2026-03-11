@@ -1,4 +1,5 @@
 import { Link } from "wouter";
+import { PageMenu } from "@/components/PageMenu";
 
 export function AboutPage() {
   return (
@@ -20,9 +21,12 @@ export function AboutPage() {
               support consistently.
             </p>
           </div>
-          <Link href="/" className="btn btn-secondary">
-            Back
-          </Link>
+          <div className="row" style={{ gap: 6 }}>
+            <PageMenu showAbout={false} />
+            <Link href="/" className="btn btn-secondary">
+              Back
+            </Link>
+          </div>
         </div>
       </div>
 

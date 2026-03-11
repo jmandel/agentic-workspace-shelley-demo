@@ -10,7 +10,11 @@ import type {
   ManagerEvent,
 } from "@/api/types";
 import * as api from "@/api/client";
-import { loadClientIdentity, updateClientDisplayName } from "@/api/auth";
+import {
+  generateParticipantDisplayName,
+  loadClientIdentity,
+  updateClientDisplayName,
+} from "@/api/auth";
 import { connectAuthenticatedSocket } from "@/api/socket";
 import type { WorkspaceFilePreviewKind } from "@/components/workspaceFileBrowserModel";
 import {
@@ -74,6 +78,13 @@ interface AppState {
   participantName: string;
   participantSubject: string;
   setParticipantName: (name: string) => void;
+  settingsOpen: boolean;
+  settingsDraftName: string;
+  openSettings: () => void;
+  closeSettings: () => void;
+  setSettingsDraftName: (name: string) => void;
+  randomizeSettingsDraftName: () => void;
+  saveSettings: () => void;
 
   // --- Namespace (discovered from manager /health) ---
   namespace: string;
@@ -208,6 +219,8 @@ export const useStore = create<AppState>((set, get) => ({
   // --- Participant ---
   participantName: initialIdentity.displayName,
   participantSubject: initialIdentity.subject,
+  settingsOpen: false,
+  settingsDraftName: initialIdentity.displayName,
   setParticipantName: (raw: string) => {
     const state = get();
     const identity = updateClientDisplayName(raw);
@@ -229,6 +242,7 @@ export const useStore = create<AppState>((set, get) => ({
     set({
       participantName: identity.displayName,
       participantSubject: identity.subject,
+      settingsDraftName: identity.displayName,
     });
 
     if (state._eventsWs !== null && state.namespaceLoaded) {
@@ -242,6 +256,26 @@ export const useStore = create<AppState>((set, get) => ({
         set(preservedTopicState);
       }
     }
+  },
+  openSettings: () => {
+    set((state) => ({
+      settingsOpen: true,
+      settingsDraftName: state.participantName,
+    }));
+  },
+  closeSettings: () => {
+    set({ settingsOpen: false });
+  },
+  setSettingsDraftName: (settingsDraftName: string) => {
+    set({ settingsDraftName });
+  },
+  randomizeSettingsDraftName: () => {
+    set({ settingsDraftName: generateParticipantDisplayName() });
+  },
+  saveSettings: () => {
+    const { settingsDraftName, setParticipantName } = get();
+    setParticipantName(settingsDraftName);
+    set({ settingsOpen: false });
   },
 
   // --- Namespace ---

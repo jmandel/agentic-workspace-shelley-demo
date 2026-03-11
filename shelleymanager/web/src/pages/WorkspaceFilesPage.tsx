@@ -1,7 +1,6 @@
 import { Link, useParams } from "wouter";
 import { useStore } from "@/store";
-import { AboutLink } from "@/components/AboutLink";
-import { ParticipantNameInput } from "@/components/ParticipantNameInput";
+import { PageMenu } from "@/components/PageMenu";
 import { WorkspaceFileBrowser } from "@/components/WorkspaceFileBrowser";
 import { workspacePageHref } from "@/navigation";
 
@@ -54,8 +53,7 @@ export function WorkspaceFilesPage() {
             <span style={{ fontSize: 13, fontWeight: 600 }}>files</span>
           </div>
           <div className="row" style={{ gap: 6 }}>
-            <AboutLink />
-            <ParticipantNameInput compact />
+            <PageMenu />
             {workspaceDetail && (
               <>
                 <span className="status-dot" data-status={workspaceDetail.status} />

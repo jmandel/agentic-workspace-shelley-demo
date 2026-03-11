@@ -6,39 +6,43 @@ import { WorkspacePage } from "@/pages/WorkspacePage";
 import { TopicPage } from "@/pages/TopicPage";
 import { WorkspaceFilesPage } from "@/pages/WorkspaceFilesPage";
 import { AboutPage } from "@/pages/AboutPage";
+import { SettingsModal } from "@/components/SettingsModal";
 import "@/index.css";
 
 function App() {
   return (
     <Router>
-      <Switch>
-        <Route path="/" component={HomePage} />
-        <Route
-          path="/app/:namespace/:workspace/files"
-          component={WorkspaceFilesPage}
-        />
-        <Route
-          path="/app/:namespace/:workspace/:topic"
-          component={TopicPage}
-        />
-        <Route
-          path="/app/:namespace/:workspace"
-          component={WorkspacePage}
-        />
-        <Route path="/about" component={AboutPage} />
-        <Route>
-          <div className="page">
-            <div className="card">
-              <h1>Not Found</h1>
-              <p>
-                <a href="/" className="btn btn-primary">
-                  Back to Manager
-                </a>
-              </p>
+      <>
+        <Switch>
+          <Route path="/" component={HomePage} />
+          <Route
+            path="/app/:namespace/:workspace/files"
+            component={WorkspaceFilesPage}
+          />
+          <Route
+            path="/app/:namespace/:workspace/:topic"
+            component={TopicPage}
+          />
+          <Route
+            path="/app/:namespace/:workspace"
+            component={WorkspacePage}
+          />
+          <Route path="/about" component={AboutPage} />
+          <Route>
+            <div className="page">
+              <div className="card">
+                <h1>Not Found</h1>
+                <p>
+                  <a href="/" className="btn btn-primary">
+                    Back to Manager
+                  </a>
+                </p>
+              </div>
             </div>
-          </div>
-        </Route>
-      </Switch>
+          </Route>
+        </Switch>
+        <SettingsModal />
+      </>
     </Router>
   );
 }

@@ -4,6 +4,130 @@ export interface ClientIdentity {
   token: string;
 }
 
+const PARTICIPANT_ADJECTIVES = [
+  "amber",
+  "arcane",
+  "brisk",
+  "calm",
+  "cedar",
+  "cinder",
+  "clear",
+  "cloudy",
+  "cobalt",
+  "comet",
+  "crisp",
+  "daring",
+  "dawn",
+  "ember",
+  "fern",
+  "frost",
+  "gentle",
+  "glossy",
+  "golden",
+  "granite",
+  "harbor",
+  "hazy",
+  "hidden",
+  "hollow",
+  "ivory",
+  "juniper",
+  "keen",
+  "kind",
+  "lively",
+  "lunar",
+  "maple",
+  "meadow",
+  "mellow",
+  "misty",
+  "noble",
+  "opal",
+  "orchid",
+  "pebble",
+  "pine",
+  "quiet",
+  "rapid",
+  "river",
+  "sage",
+  "silver",
+  "smoky",
+  "solar",
+  "spruce",
+  "steady",
+  "stellar",
+  "summit",
+  "swift",
+  "tidy",
+  "timber",
+  "velvet",
+  "verdant",
+  "violet",
+  "warm",
+  "whisper",
+  "winter",
+];
+
+const PARTICIPANT_NOUNS = [
+  "badger",
+  "beacon",
+  "brook",
+  "canopy",
+  "canyon",
+  "circuit",
+  "cloud",
+  "comet",
+  "creek",
+  "falcon",
+  "field",
+  "firefly",
+  "fjord",
+  "forest",
+  "fox",
+  "garden",
+  "glacier",
+  "grove",
+  "harbor",
+  "hawk",
+  "heron",
+  "hill",
+  "iris",
+  "island",
+  "lagoon",
+  "lantern",
+  "leaf",
+  "lily",
+  "meadow",
+  "mesa",
+  "minnow",
+  "moon",
+  "otter",
+  "owl",
+  "path",
+  "peak",
+  "pine",
+  "planet",
+  "pond",
+  "quartz",
+  "raven",
+  "reef",
+  "ridge",
+  "river",
+  "rook",
+  "shore",
+  "sparrow",
+  "spring",
+  "star",
+  "stone",
+  "stream",
+  "sun",
+  "thicket",
+  "trail",
+  "vale",
+  "wave",
+  "willow",
+  "wind",
+  "wren",
+];
+
 const SUBJECT_KEY = "workspace-auth-subject";
 const DISPLAY_NAME_KEY = "workspace-display-name";
 
@@ -37,6 +161,25 @@ function normalizeDisplayName(value: string, fallback: string): string {
   return value.trim().replace(/\s+/g, " ").slice(0, 64) || fallback;
 }
 
+function capitalize(value: string): string {
+  if (!value) return value;
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+export function generateParticipantDisplayName(
+  random: () => number = Math.random,
+): string {
+  const adjective =
+    PARTICIPANT_ADJECTIVES[
+      Math.floor(random() * PARTICIPANT_ADJECTIVES.length)
+    ] ?? "quiet";
+  const noun =
+    PARTICIPANT_NOUNS[Math.floor(random() * PARTICIPANT_NOUNS.length)] ??
+    "otter";
+  const number = 10000 + Math.floor(random() * 90000);
+  return `${capitalize(adjective)} ${capitalize(noun)} ${number}`;
+}
+
 export function loadClientIdentity(): ClientIdentity {
   const storedSubject = (localStorage.getItem(SUBJECT_KEY) ?? "").trim();
   const subject = storedSubject || randomId("web");
@@ -44,7 +187,10 @@ export function loadClientIdentity(): ClientIdentity {
     localStorage.setItem(SUBJECT_KEY, subject);
   }
 
-  const storedDisplayName = normalizeDisplayName(localStorage.getItem(DISPLAY_NAME_KEY) ?? "", subject);
+  const storedDisplayName = normalizeDisplayName(
+    localStorage.getItem(DISPLAY_NAME_KEY) ?? "",
+    generateParticipantDisplayName(),
+  );
   if (!localStorage.getItem(DISPLAY_NAME_KEY)) {
     localStorage.setItem(DISPLAY_NAME_KEY, storedDisplayName);
   }
@@ -58,7 +204,7 @@ export function loadClientIdentity(): ClientIdentity {
 
 export function updateClientDisplayName(value: string): ClientIdentity {
   const current = loadClientIdentity();
-  const displayName = normalizeDisplayName(value, current.subject);
+  const displayName = normalizeDisplayName(value, current.displayName);
   localStorage.setItem(DISPLAY_NAME_KEY, displayName);
   return {
     subject: current.subject,
