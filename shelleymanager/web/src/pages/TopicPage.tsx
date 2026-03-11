@@ -5,7 +5,7 @@ import { AboutLink } from "@/components/AboutLink";
 import { MessageList } from "@/components/MessageList";
 import { QueuePanel } from "@/components/QueuePanel";
 import { ParticipantNameInput } from "@/components/ParticipantNameInput";
-import { topicFilesPageHref } from "@/navigation";
+import { workspaceFilesPageHref } from "@/navigation";
 import * as api from "@/api/client";
 
 const CLI_REPO_URL =
@@ -316,12 +316,14 @@ export function TopicPage() {
                     Open in Shelley
                   </a>
                 )}
-                <Link
-                  href={topicFilesPageHref(namespace, workspace, topic)}
+                <a
+                  href={workspaceFilesPageHref(namespace, workspace)}
                   className="btn btn-secondary btn-sm"
+                  target="_blank"
+                  rel="noopener noreferrer"
                 >
                   Browse Files
-                </Link>
+                </a>
                 <button
                   className="btn btn-secondary btn-sm"
                   type="button"

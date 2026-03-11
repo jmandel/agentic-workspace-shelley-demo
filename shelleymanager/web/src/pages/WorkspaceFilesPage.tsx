@@ -3,17 +3,15 @@ import { useStore } from "@/store";
 import { AboutLink } from "@/components/AboutLink";
 import { ParticipantNameInput } from "@/components/ParticipantNameInput";
 import { WorkspaceFileBrowser } from "@/components/WorkspaceFileBrowser";
-import { topicPageHref, workspacePageHref } from "@/navigation";
+import { workspacePageHref } from "@/navigation";
 
 export function WorkspaceFilesPage() {
   const params = useParams<{
     namespace: string;
     workspace: string;
-    topic: string;
   }>();
   const namespace = params.namespace ?? "";
   const workspace = params.workspace ?? "";
-  const topic = params.topic ?? "";
 
   const workspaceDetail = useStore((s) =>
     s.workspaces.find(
@@ -53,20 +51,6 @@ export function WorkspaceFilesPage() {
             <span className="muted" style={{ fontSize: 13 }}>
               /
             </span>
-            <Link
-              href={topicPageHref(namespace, workspace, topic)}
-              style={{
-                fontSize: 13,
-                fontWeight: 500,
-                textDecoration: "none",
-                color: "inherit",
-              }}
-            >
-              {topic}
-            </Link>
-            <span className="muted" style={{ fontSize: 13 }}>
-              /
-            </span>
             <span style={{ fontSize: 13, fontWeight: 600 }}>files</span>
           </div>
           <div className="row" style={{ gap: 6 }}>
@@ -85,16 +69,14 @@ export function WorkspaceFilesPage() {
         <div className="stack-xs" style={{ marginTop: 10 }}>
           <h1 style={{ margin: 0 }}>Workspace Files</h1>
           <p className="muted" style={{ margin: 0 }}>
-            Files are shared across topics in this workspace. This page was opened
-            from <code>{topic}</code>.
+            These files belong to the workspace, not to any single topic.
+          </p>
+          <p className="muted" style={{ margin: 0 }}>
+            Every topic in <code>{workspace}</code> sees the same workspace files,
+            so browsing or uploading here affects the shared working set for the
+            whole workspace.
           </p>
           <div className="row" style={{ gap: 6, marginTop: 4 }}>
-            <Link
-              href={topicPageHref(namespace, workspace, topic)}
-              className="btn btn-secondary btn-sm"
-            >
-              Back to Topic
-            </Link>
             <Link
               href={workspacePageHref(namespace, workspace)}
               className="btn btn-secondary btn-sm"

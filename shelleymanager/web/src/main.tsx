@@ -14,7 +14,7 @@ function App() {
       <Switch>
         <Route path="/" component={HomePage} />
         <Route
-          path="/app/:namespace/:workspace/:topic/files"
+          path="/app/:namespace/:workspace/files"
           component={WorkspaceFilesPage}
         />
         <Route

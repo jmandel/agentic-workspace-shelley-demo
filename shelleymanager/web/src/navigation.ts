@@ -10,10 +10,9 @@ export function topicPageHref(
   return `${workspacePageHref(namespace, workspace)}/${encodeURIComponent(topic)}`;
 }
 
-export function topicFilesPageHref(
+export function workspaceFilesPageHref(
   namespace: string,
   workspace: string,
-  topic: string,
 ): string {
-  return `${topicPageHref(namespace, workspace, topic)}/files`;
+  return `${workspacePageHref(namespace, workspace)}/files`;
 }

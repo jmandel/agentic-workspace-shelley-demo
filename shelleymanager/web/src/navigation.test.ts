@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
-  topicFilesPageHref,
   topicPageHref,
+  workspaceFilesPageHref,
   workspacePageHref,
 } from "./navigation";
 
@@ -13,12 +13,10 @@ describe("navigation helpers", () => {
     );
   });
 
-  test("builds a dedicated topic files href", () => {
-    expect(topicFilesPageHref("acme", "demo", "general")).toBe(
-      "/app/acme/demo/general/files",
-    );
-    expect(topicFilesPageHref("acme space", "demo/work", "topic name")).toBe(
-      "/app/acme%20space/demo%2Fwork/topic%20name/files",
+  test("builds a dedicated workspace files href", () => {
+    expect(workspaceFilesPageHref("acme", "demo")).toBe("/app/acme/demo/files");
+    expect(workspaceFilesPageHref("acme space", "demo/work")).toBe(
+      "/app/acme%20space/demo%2Fwork/files",
     );
   });
 });
