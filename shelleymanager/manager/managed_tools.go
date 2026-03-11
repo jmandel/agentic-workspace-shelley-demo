@@ -300,14 +300,30 @@ func (m *Manager) listManagedWorkspaceTools(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "invalid runtime response", http.StatusBadGateway)
 		return
 	}
+	inventory := make([]map[string]any, 0, len(ws.LocalTools)+len(tools))
+	for _, tool := range ws.LocalTools {
+		inventory = append(inventory, map[string]any{
+			"kind":        "local",
+			"name":        tool.Name,
+			"description": tool.Description,
+		})
+	}
 	for _, tool := range tools {
 		if name, _ := tool["name"].(string); name != "" {
 			if binding, err := m.loadManagedToolBinding(ws.Namespace, ws.Name, name); err == nil {
 				overlayManagedToolPublic(tool, binding)
 			}
+			entry := map[string]any{
+				"kind": "mcp",
+				"name": name,
+			}
+			if description, _ := tool["description"].(string); description != "" {
+				entry["description"] = description
+			}
+			inventory = append(inventory, entry)
 		}
 	}
-	writeJSON(w, http.StatusOK, tools)
+	writeJSON(w, http.StatusOK, inventory)
 }
 
 func (m *Manager) handleManagedWorkspaceTool(w http.ResponseWriter, r *http.Request, ws *Workspace, toolName string) {
@@ -674,6 +690,7 @@ func (m *Manager) runtimeJSONRequest(ctx context.Context, ws *Workspace, method,
 	if len(body) > 0 {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	applyWorkspaceRuntimeIdentity(req, ctx)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return 0, nil, nil, err

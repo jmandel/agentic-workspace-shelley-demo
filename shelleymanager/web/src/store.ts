@@ -7,6 +7,7 @@ import type {
   ManagerEvent,
 } from "@/api/types";
 import * as api from "@/api/client";
+import { loadClientIdentity, socketAuthenticationMessage, updateClientDisplayName } from "@/api/auth";
 
 // ---------------------------------------------------------------------------
 // Chat message (accumulated from WebSocket events)
@@ -38,6 +39,7 @@ export type ConnectionStatus = "idle" | "connecting" | "connected" | "disconnect
 interface AppState {
   // --- Participant identity (localStorage-backed) ---
   participantName: string;
+  participantSubject: string;
   setParticipantName: (name: string) => void;
 
   // --- Namespace (discovered from manager /health) ---
@@ -95,22 +97,7 @@ interface AppState {
 // Participant persistence
 // ---------------------------------------------------------------------------
 
-const PARTICIPANT_KEY = "workspace-participant-id";
-
-function loadParticipant(): string {
-  const stored = (localStorage.getItem(PARTICIPANT_KEY) ?? "").trim().slice(0, 64);
-  if (stored) return stored;
-  const fresh = "web-" + Math.random().toString(36).slice(2, 8);
-  localStorage.setItem(PARTICIPANT_KEY, fresh);
-  return fresh;
-}
-
-function persistParticipant(name: string): string {
-  const normalized = name.trim().replace(/\s+/g, " ").slice(0, 64) ||
-    "web-" + Math.random().toString(36).slice(2, 8);
-  localStorage.setItem(PARTICIPANT_KEY, normalized);
-  return normalized;
-}
+const initialIdentity = loadClientIdentity();
 
 // ---------------------------------------------------------------------------
 // Empty queue sentinel
@@ -131,10 +118,11 @@ function normalizeQueue(raw: Partial<QueueSnapshot> | undefined): QueueSnapshot 
 
 export const useStore = create<AppState>((set, get) => ({
   // --- Participant ---
-  participantName: loadParticipant(),
+  participantName: initialIdentity.displayName,
+  participantSubject: initialIdentity.subject,
   setParticipantName: (raw: string) => {
-    const name = persistParticipant(raw);
-    set({ participantName: name });
+    const identity = updateClientDisplayName(raw);
+    set({ participantName: identity.displayName, participantSubject: identity.subject });
   },
 
   // --- Namespace ---
@@ -242,8 +230,7 @@ export const useStore = create<AppState>((set, get) => ({
 
     set({ eventsStatus: "connecting" });
 
-    const clientId = get().participantName;
-    const url = api.eventsWSURL(namespace, clientId);
+    const url = api.eventsWSURL(namespace);
     const ws = new WebSocket(url);
     set({ _eventsWs: ws });
 
@@ -251,7 +238,7 @@ export const useStore = create<AppState>((set, get) => ({
 
     ws.onopen = () => {
       if (!isActive()) return;
-      set({ eventsStatus: "connected" });
+      ws.send(socketAuthenticationMessage());
     };
 
     ws.onclose = () => {
@@ -273,9 +260,14 @@ export const useStore = create<AppState>((set, get) => ({
       if (!isActive()) return;
       const msg = JSON.parse(event.data as string) as ManagerEvent;
 
+      if (msg.type === "authenticated") {
+        return;
+      }
+
       // Handle connected first — its replay field means "replay follows",
       // not that this message itself is a replay event.
       if (msg.type === "connected") {
+        set({ eventsStatus: "connected" });
         get().fetchWorkspaces();
         return;
       }
@@ -396,8 +388,7 @@ export const useStore = create<AppState>((set, get) => ({
       _injectCounter: 0,
     });
 
-    const clientId = get().participantName;
-    const url = api.topicWSURL(namespace, workspace, topic, clientId);
+    const url = api.topicWSURL(namespace, workspace, topic);
     const ws = new WebSocket(url);
     set({ _ws: ws });
 
@@ -408,8 +399,7 @@ export const useStore = create<AppState>((set, get) => ({
 
     ws.onopen = () => {
       if (!isActive()) return;
-      set({ connectionStatus: "connected" });
-      get().refreshQueue();
+      ws.send(socketAuthenticationMessage());
     };
 
     ws.onclose = () => {
@@ -430,8 +420,11 @@ export const useStore = create<AppState>((set, get) => ({
       const msg = JSON.parse(event.data as string);
 
       switch (msg.type) {
+        case "authenticated":
+          break;
         case "connected":
-          // Connection status already tracked by connectionStatus state
+          set({ connectionStatus: "connected" });
+          get().refreshQueue();
           break;
         case "prompt_status":
           if (msg.status === "started") set({ turnActive: true });
@@ -454,7 +447,7 @@ export const useStore = create<AppState>((set, get) => ({
         case "user":
           pushMessage(
             "user",
-            msg.submittedBy?.id ?? "User",
+            msg.submittedBy?.displayName ?? msg.submittedBy?.id ?? "User",
             msg.data ?? "",
           );
           break;
@@ -509,7 +502,7 @@ export const useStore = create<AppState>((set, get) => ({
           break;
         case "done":
           if (msg.status === "interrupted") {
-            const who = msg.interruptedBy?.id ?? "someone";
+            const who = msg.interruptedBy?.displayName ?? msg.interruptedBy?.id ?? "someone";
             pushMessage("interrupted", "Interrupted", msg.reason ? `${who}: ${msg.reason}` : `Stopped by ${who}`);
           }
           // Normal turn completion is reflected by turnActive state
@@ -550,7 +543,6 @@ export const useStore = create<AppState>((set, get) => ({
     ws.send(
       JSON.stringify({
         type: "prompt",
-        promptId: `p_web_${Date.now()}_${counter}`,
         data: text,
       }),
     );
@@ -564,7 +556,6 @@ export const useStore = create<AppState>((set, get) => ({
     ws.send(
       JSON.stringify({
         type: "inject",
-        injectId: `inj_web_${Date.now()}_${counter}`,
         data: text,
       }),
     );
@@ -589,7 +580,7 @@ export const useStore = create<AppState>((set, get) => ({
     const text = entry?.text ?? "";
     // Cancel the queue entry
     await api.cancelQueuedPrompt(
-      conn.namespace, conn.workspace, conn.topic, promptId, get().participantName,
+      conn.namespace, conn.workspace, conn.topic, promptId,
     );
     // Inject its text into the active turn
     if (text) {
@@ -615,7 +606,6 @@ export const useStore = create<AppState>((set, get) => ({
         conn.namespace,
         conn.workspace,
         conn.topic,
-        get().participantName,
       );
       const q = normalizeQueue(snapshot);
       set({ queue: q, turnActive: !!snapshot?.activePromptId });

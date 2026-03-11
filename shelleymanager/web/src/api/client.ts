@@ -8,24 +8,21 @@ import type {
   RegisterToolRequest,
   GrantRequest,
 } from "./types";
+import { authorizationHeader } from "./auth";
 
 const BASE = "";
 
 async function request<T>(
   url: string,
   init?: RequestInit,
-  clientId?: string,
 ): Promise<T> {
   const headers: Record<string, string> = {};
   if (init?.body && typeof init.body === "string") {
     headers["Content-Type"] = "application/json";
   }
-  if (clientId) {
-    headers["X-Workspace-Client-ID"] = clientId;
-  }
   const res = await fetch(`${BASE}${url}`, {
     ...init,
-    headers: { ...headers, ...(init?.headers as Record<string, string>) },
+    headers: { ...authorizationHeader(), ...headers, ...(init?.headers as Record<string, string>) },
   });
   if (!res.ok) {
     const text = await res.text();
@@ -123,12 +120,9 @@ export async function fetchQueue(
   namespace: string,
   workspace: string,
   topic: string,
-  clientId?: string,
 ): Promise<QueueSnapshot> {
   return request<QueueSnapshot>(
     `${workspaceBase(namespace, workspace)}/topics/${encodeURIComponent(topic)}/queue`,
-    undefined,
-    clientId,
   );
 }
 
@@ -137,12 +131,10 @@ export async function cancelQueuedPrompt(
   workspace: string,
   topic: string,
   promptId: string,
-  clientId?: string,
 ): Promise<void> {
   await request<unknown>(
     `${workspaceBase(namespace, workspace)}/topics/${encodeURIComponent(topic)}/queue/${encodeURIComponent(promptId)}`,
     { method: "DELETE" },
-    clientId,
   );
 }
 
@@ -152,12 +144,10 @@ export async function updateQueuedPrompt(
   topic: string,
   promptId: string,
   text: string,
-  clientId?: string,
 ): Promise<QueueSnapshot> {
   return request<QueueSnapshot>(
     `${workspaceBase(namespace, workspace)}/topics/${encodeURIComponent(topic)}/queue/${encodeURIComponent(promptId)}`,
     { method: "PATCH", body: JSON.stringify({ data: text }) },
-    clientId,
   );
 }
 
@@ -167,12 +157,10 @@ export async function moveQueuedPrompt(
   topic: string,
   promptId: string,
   direction: "up" | "down" | "top" | "bottom",
-  clientId?: string,
 ): Promise<QueueSnapshot> {
   return request<QueueSnapshot>(
     `${workspaceBase(namespace, workspace)}/topics/${encodeURIComponent(topic)}/queue/${encodeURIComponent(promptId)}/move`,
     { method: "POST", body: JSON.stringify({ direction }) },
-    clientId,
   );
 }
 
@@ -180,35 +168,26 @@ export async function clearMyQueue(
   namespace: string,
   workspace: string,
   topic: string,
-  clientId?: string,
 ): Promise<{ removed: string[] }> {
   return request<{ removed: string[] }>(
     `${workspaceBase(namespace, workspace)}/topics/${encodeURIComponent(topic)}/queue:clear-mine`,
     { method: "POST" },
-    clientId,
   );
 }
 
 // --- Managed tools ---
 
-export interface ManagedToolDef {
+export interface EnabledTool {
+  kind: "local" | "mcp";
   name: string;
   description?: string;
-}
-
-export interface ManagedTool {
-  name: string;
-  description?: string;
-  protocol?: string;
-  provider?: string;
-  tools?: ManagedToolDef[];
 }
 
 export async function listTools(
   namespace: string,
   workspace: string,
-): Promise<ManagedTool[]> {
-  return request<ManagedTool[]>(
+): Promise<EnabledTool[]> {
+  return request<EnabledTool[]>(
     `${workspaceBase(namespace, workspace)}/tools`,
   );
 }
@@ -242,18 +221,16 @@ export async function grantTool(
 
 export function eventsWSURL(
   namespace: string,
-  clientId: string,
 ): string {
   const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${scheme}//${window.location.host}/acp/${encodeURIComponent(namespace)}/events?client_id=${encodeURIComponent(clientId)}`;
+  return `${scheme}//${window.location.host}/apis/v1/namespaces/${encodeURIComponent(namespace)}/events`;
 }
 
 export function topicWSURL(
   namespace: string,
   workspace: string,
   topic: string,
-  clientId: string,
 ): string {
   const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${scheme}//${window.location.host}/acp/${encodeURIComponent(namespace)}/${encodeURIComponent(workspace)}/topics/${encodeURIComponent(topic)}?client_id=${encodeURIComponent(clientId)}`;
+  return `${scheme}//${window.location.host}/apis/v1/namespaces/${encodeURIComponent(namespace)}/workspaces/${encodeURIComponent(workspace)}/topics/${encodeURIComponent(topic)}/events`;
 }

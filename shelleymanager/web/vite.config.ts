@@ -18,10 +18,6 @@ export default defineConfig({
       "/apis": {
         target: managerUrl,
         changeOrigin: true,
-      },
-      "/acp": {
-        target: managerUrl,
-        changeOrigin: true,
         ws: true,
         configure: (proxy) => {
           proxy.on("error", (err, _req, res) => {
@@ -36,10 +32,6 @@ export default defineConfig({
             }
           });
         },
-      },
-      "/workspaces": {
-        target: managerUrl,
-        changeOrigin: true,
       },
       "/health": {
         target: managerUrl,

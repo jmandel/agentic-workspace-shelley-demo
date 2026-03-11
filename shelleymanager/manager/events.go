@@ -19,8 +19,7 @@ type eventClient struct {
 
 // EventHub manages lifecycle event broadcasting to WebSocket clients.
 type EventHub struct {
-	sessionID string
-	counter   atomic.Int64
+	counter atomic.Int64
 
 	mu      sync.Mutex
 	clients map[string]map[*eventClient]struct{} // namespace → clients
@@ -29,8 +28,7 @@ type EventHub struct {
 
 func newEventHub() *EventHub {
 	return &EventHub{
-		sessionID: fmt.Sprintf("ms_%d", time.Now().UnixNano()),
-		clients:   make(map[string]map[*eventClient]struct{}),
+		clients: make(map[string]map[*eventClient]struct{}),
 	}
 }
 
@@ -106,7 +104,7 @@ func (h *EventHub) closeAll() {
 	}
 }
 
-// handleEvents is the WebSocket handler for /acp/{ns}/events.
+// handleEvents is the WebSocket handler for /apis/v1/namespaces/{namespace}/events.
 func (m *Manager) handleEvents(w http.ResponseWriter, r *http.Request, namespace string) {
 	if err := validateName(namespace); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -126,7 +124,11 @@ func (m *Manager) handleEvents(w http.ResponseWriter, r *http.Request, namespace
 	}
 	defer conn.CloseNow()
 
-	ctx := conn.CloseRead(r.Context())
+	ctx := r.Context()
+	if _, err := m.authenticateWebSocket(ctx, conn, r); err != nil {
+		return
+	}
+	ctx = conn.CloseRead(ctx)
 
 	client := m.events.register(namespace)
 	defer m.events.unregister(namespace, client)
@@ -134,9 +136,8 @@ func (m *Manager) handleEvents(w http.ResponseWriter, r *http.Request, namespace
 	// Send connected message.
 	connected, _ := json.Marshal(map[string]any{
 		"type":            "connected",
-		"protocolVersion": "manager-demo-v1",
+		"protocolVersion": "workspace-manager-v1",
 		"namespace":       namespace,
-		"sessionId":       m.events.sessionID,
 		"replay":          true,
 	})
 	if err := conn.Write(ctx, websocket.MessageText, connected); err != nil {

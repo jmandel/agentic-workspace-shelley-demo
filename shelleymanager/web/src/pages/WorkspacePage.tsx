@@ -19,13 +19,13 @@ export function WorkspacePage() {
   const createTopic = useStore((s) => s.createTopic);
 
   const [detail, setDetail] = useState<WorkspaceDetail | null>(null);
-  const [managedTools, setManagedTools] = useState<api.ManagedTool[]>([]);
+  const [enabledTools, setEnabledTools] = useState<api.EnabledTool[]>([]);
   const [newTopic, setNewTopic] = useState("");
   const [busy, setBusy] = useState(false);
   const [toolStatus, setToolStatus] = useState("");
 
   const refreshTools = () =>
-    api.listTools(namespace, workspace).then(setManagedTools).catch(() => {});
+    api.listTools(namespace, workspace).then(setEnabledTools).catch(() => {});
 
   // Fetch workspace detail and registered tools on mount.
   useEffect(() => {
@@ -37,11 +37,6 @@ export function WorkspacePage() {
   const ws = storeWs ?? detail;
 
   const topics = ws?.topics ?? [];
-  const localToolNames =
-    ws?.runtime?.localTools
-      ?.filter((t) => t.exposure !== "support_bundle")
-      .map((t) => t.name)
-      .join(", ") ?? "";
 
   const handleDeleteWorkspace = async () => {
     if (!confirm(`Delete workspace "${workspace}"?`)) return;
@@ -133,26 +128,20 @@ export function WorkspacePage() {
               Created {new Date(ws.createdAt).toLocaleString()}
             </p>
           )}
-          {localToolNames && (
-            <p style={{ fontSize: 12, margin: "4px 0" }}>
-              <strong>Local tools:</strong> {localToolNames}
-            </p>
-          )}
-
-          <h3 style={{ margin: "12px 0 6px", fontSize: 13 }}>MCP Tools</h3>
-          {managedTools.length > 0 ? (
+          <h3 style={{ margin: "12px 0 6px", fontSize: 13 }}>Enabled Tools</h3>
+          {enabledTools.length > 0 ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {managedTools.map((tool) => (
+              {enabledTools.map((tool) => (
                 <div key={tool.name} className="tool-card">
                   <div className="tool-card-copy">
-                    <div className="tool-card-title">{tool.name}</div>
+                    <div className="tool-card-title">
+                      {tool.name}
+                      <span className="tool-card-meta" style={{ marginLeft: 8 }}>
+                        {tool.kind}
+                      </span>
+                    </div>
                     {tool.description && (
                       <div className="tool-card-description">{tool.description}</div>
-                    )}
-                    {tool.tools && tool.tools.length > 0 && (
-                      <div className="tool-card-meta">
-                        Tools: {tool.tools.map((t) => t.name).join(", ")}
-                      </div>
                     )}
                   </div>
                 </div>
@@ -160,10 +149,10 @@ export function WorkspacePage() {
             </div>
           ) : (
             <p className="muted" style={{ fontSize: 12, margin: 0 }}>
-              No MCP tools registered.
+              No tools enabled.
             </p>
           )}
-          {!managedTools.some((t) => t.name === "hl7-jira") && (
+          {!enabledTools.some((t) => t.name === "hl7-jira") && (
             <div style={{ marginTop: 8 }}>
               <button
                 className="btn btn-secondary btn-sm"

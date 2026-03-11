@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/coder/websocket v1.8.14
+	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/modelcontextprotocol/go-sdk v1.4.0
 )
 

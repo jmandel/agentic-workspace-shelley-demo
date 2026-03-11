@@ -5,7 +5,7 @@ import * as api from "@/api/client";
 
 export function QueuePanel() {
   const conn = useStore((s) => s.topicConnection);
-  const clientId = useStore((s) => s.participantName);
+  const participantSubject = useStore((s) => s.participantSubject);
   const queue = useStore((s) => s.queue);
   const turnActive = useStore((s) => s.turnActive);
   const connectionStatus = useStore((s) => s.connectionStatus);
@@ -39,7 +39,7 @@ export function QueuePanel() {
           <QueueEntryCard
             key={entry.promptId}
             entry={entry}
-            isOwn={entry.submittedBy?.id === clientId}
+            isOwn={entry.submittedBy?.id === participantSubject}
             isFirst={entry.position === 1}
             isLast={entry.position === queuedCount}
             turnActive={turnActive}
@@ -47,7 +47,6 @@ export function QueuePanel() {
             namespace={namespace}
             workspace={workspace}
             topic={topic}
-            clientId={clientId}
           />
         ))}
       </div>
@@ -65,7 +64,6 @@ function QueueEntryCard({
   namespace,
   workspace,
   topic,
-  clientId,
 }: {
   entry: QueueEntry;
   isOwn: boolean;
@@ -76,20 +74,19 @@ function QueueEntryCard({
   namespace: string;
   workspace: string;
   topic: string;
-  clientId: string;
 }) {
   const refreshQueue = useStore((s) => s.refreshQueue);
   const injectFromQueue = useStore((s) => s.injectFromQueue);
   const [editText, setEditText] = useState(entry.text);
   const [saving, setSaving] = useState(false);
-  const owner = entry.submittedBy?.id ?? "unknown";
+  const owner = entry.submittedBy?.displayName ?? entry.submittedBy?.id ?? "unknown";
 
   const save = async () => {
     if (saving || !editText.trim()) return;
     setSaving(true);
     try {
       await api.updateQueuedPrompt(
-        namespace, workspace, topic, entry.promptId, editText.trim(), clientId,
+        namespace, workspace, topic, entry.promptId, editText.trim(),
       );
       refreshQueue();
     } finally {
@@ -99,14 +96,14 @@ function QueueEntryCard({
 
   const move = async (direction: "up" | "down" | "top" | "bottom") => {
     await api.moveQueuedPrompt(
-      namespace, workspace, topic, entry.promptId, direction, clientId,
+      namespace, workspace, topic, entry.promptId, direction,
     );
     refreshQueue();
   };
 
   const cancel = async () => {
     await api.cancelQueuedPrompt(
-      namespace, workspace, topic, entry.promptId, clientId,
+      namespace, workspace, topic, entry.promptId,
     );
     refreshQueue();
   };
@@ -126,35 +123,35 @@ function QueueEntryCard({
       />
       <div className="row row-end" style={{ marginTop: 4 }}>
         {turnActive && (
-          <button
-            className="btn btn-primary btn-sm"
-            onClick={() => injectFromQueue(entry.promptId)}
-            disabled={!connected}
-            title="Cancel this entry and inject its text into the active turn"
-          >
-            Inject
+        <button
+          className="btn btn-primary btn-sm"
+          onClick={() => injectFromQueue(entry.promptId)}
+          disabled={!isOwn || !connected}
+          title="Cancel this entry and inject its text into the active turn"
+        >
+          Inject
           </button>
         )}
         <button
           className="btn btn-secondary btn-sm"
           onClick={save}
-          disabled={saving || editText.trim() === entry.text}
+          disabled={!isOwn || saving || editText.trim() === entry.text}
         >
           Save
         </button>
-        <button className="btn btn-secondary btn-sm" onClick={() => move("top")} disabled={isFirst}>
+        <button className="btn btn-secondary btn-sm" onClick={() => move("top")} disabled={!isOwn || isFirst}>
           Top
         </button>
-        <button className="btn btn-secondary btn-sm" onClick={() => move("up")} disabled={isFirst}>
+        <button className="btn btn-secondary btn-sm" onClick={() => move("up")} disabled={!isOwn || isFirst}>
           Up
         </button>
-        <button className="btn btn-secondary btn-sm" onClick={() => move("down")} disabled={isLast}>
+        <button className="btn btn-secondary btn-sm" onClick={() => move("down")} disabled={!isOwn || isLast}>
           Down
         </button>
-        <button className="btn btn-secondary btn-sm" onClick={() => move("bottom")} disabled={isLast}>
+        <button className="btn btn-secondary btn-sm" onClick={() => move("bottom")} disabled={!isOwn || isLast}>
           Bottom
         </button>
-        <button className="btn btn-danger btn-sm" onClick={cancel}>
+        <button className="btn btn-danger btn-sm" onClick={cancel} disabled={!isOwn}>
           Delete
         </button>
       </div>

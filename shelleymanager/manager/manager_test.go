@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 type fakeLauncher struct {
@@ -59,6 +61,43 @@ func (f *fakeLauncher) Launch(_ context.Context, spec LaunchSpec) (*Runtime, err
 		}
 	}
 	return &cloned, nil
+}
+
+func managerTestJWT(t *testing.T, subject string) string {
+	t.Helper()
+	token := jwt.NewWithClaims(jwt.SigningMethodNone, jwt.MapClaims{
+		"iss":  "manager-test",
+		"sub":  subject,
+		"name": subject,
+		"iat":  time.Now().Unix(),
+	})
+	signed, err := token.SignedString(jwt.UnsafeAllowNoneSignatureType)
+	if err != nil {
+		t.Fatalf("failed to sign test jwt: %v", err)
+	}
+	return signed
+}
+
+func setManagerAuth(t *testing.T, req *http.Request, subject string) {
+	t.Helper()
+	req.Header.Set("Authorization", "Bearer "+managerTestJWT(t, subject))
+}
+
+func authenticateManagerWS(t *testing.T, ctx context.Context, conn *websocket.Conn, subject string) {
+	t.Helper()
+	if err := wsjson.Write(ctx, conn, map[string]string{
+		"type":  "authenticate",
+		"token": managerTestJWT(t, subject),
+	}); err != nil {
+		t.Fatalf("failed to authenticate manager websocket: %v", err)
+	}
+	_, data, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("failed to read websocket auth response: %v", err)
+	}
+	if !strings.Contains(string(data), `"type":"authenticated"`) {
+		t.Fatalf("unexpected websocket auth payload %s", data)
+	}
 }
 
 func TestManagerCreateAndProxyRoutes(t *testing.T) {
@@ -111,7 +150,13 @@ func TestManagerCreateAndProxyRoutes(t *testing.T) {
 	defer server.Close()
 
 	createBody := `{"name":"demo","topics":[{"name":"general"}]}`
-	res, err := http.Post(server.URL+"/apis/v1/namespaces/acme/workspaces", "application/json", strings.NewReader(createBody))
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/apis/v1/namespaces/acme/workspaces", strings.NewReader(createBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	setManagerAuth(t, req, "alice@example.com")
+	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,11 +169,16 @@ func TestManagerCreateAndProxyRoutes(t *testing.T) {
 	if err := json.NewDecoder(res.Body).Decode(&created); err != nil {
 		t.Fatal(err)
 	}
-	if created.Name != "demo" || created.API == "" || created.Endpoint == "" {
+	if created.Name != "demo" || created.API == "" {
 		t.Fatalf("unexpected create response: %+v", created)
 	}
 
-	topicsRes, err := http.Get(server.URL + "/apis/v1/namespaces/acme/workspaces/demo/topics")
+	topicsReq, err := http.NewRequest(http.MethodGet, server.URL+"/apis/v1/namespaces/acme/workspaces/demo/topics", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setManagerAuth(t, topicsReq, "alice@example.com")
+	topicsRes, err := http.DefaultClient.Do(topicsReq)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +188,12 @@ func TestManagerCreateAndProxyRoutes(t *testing.T) {
 		t.Fatalf("expected proxied topics response, got %s", body)
 	}
 
-	fileRes, err := http.Get(server.URL + "/workspaces/demo/files/readme.txt")
+	fileReq, err := http.NewRequest(http.MethodGet, server.URL+"/apis/v1/namespaces/acme/workspaces/demo/files/readme.txt", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setManagerAuth(t, fileReq, "alice@example.com")
+	fileRes, err := http.DefaultClient.Do(fileReq)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,6 +207,7 @@ func TestManagerCreateAndProxyRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	setManagerAuth(t, deleteReq, "alice@example.com")
 	deleteRes, err := http.DefaultClient.Do(deleteReq)
 	if err != nil {
 		t.Fatal(err)
@@ -257,7 +313,13 @@ func TestManagerRegistersWorkspaceToolAsManagedProxy(t *testing.T) {
 	defer server.Close()
 
 	createBody := `{"name":"bp-ig-fix","topics":[{"name":"bp-panel-validator"}],"runtime":{"localTools":["hl7-jira-support"]}}`
-	res, err := http.Post(server.URL+"/apis/v1/namespaces/acme/workspaces", "application/json", strings.NewReader(createBody))
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/apis/v1/namespaces/acme/workspaces", strings.NewReader(createBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	setManagerAuth(t, req, "alice@example.com")
+	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +328,7 @@ func TestManagerRegistersWorkspaceToolAsManagedProxy(t *testing.T) {
 		t.Fatalf("create status = %d", res.StatusCode)
 	}
 
-	registerRes, err := http.Post(server.URL+"/apis/v1/namespaces/acme/workspaces/bp-ig-fix/tools", "application/json", strings.NewReader(`{
+	registerReq, err := http.NewRequest(http.MethodPost, server.URL+"/apis/v1/namespaces/acme/workspaces/bp-ig-fix/tools", strings.NewReader(`{
 		"name":"hl7-jira",
 		"description":"Search and inspect issues from the real HL7 Jira SQLite snapshot",
 		"protocol":"mcp",
@@ -280,6 +342,12 @@ func TestManagerRegistersWorkspaceToolAsManagedProxy(t *testing.T) {
 			"env":{"HL7_JIRA_DB":"/tools/hl7-jira-support/data/jira-data.db"}
 		}
 	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerReq.Header.Set("Content-Type", "application/json")
+	setManagerAuth(t, registerReq, "alice@example.com")
+	registerRes, err := http.DefaultClient.Do(registerReq)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +372,12 @@ func TestManagerRegistersWorkspaceToolAsManagedProxy(t *testing.T) {
 	if strings.Contains(string(detailBody), `"type":"manager_proxy"`) {
 		t.Fatalf("expected public tool detail to hide manager_proxy, got %s", string(detailBody))
 	}
-	listRes, err := http.Get(server.URL + "/apis/v1/namespaces/acme/workspaces/bp-ig-fix/tools")
+	listReq, err := http.NewRequest(http.MethodGet, server.URL+"/apis/v1/namespaces/acme/workspaces/bp-ig-fix/tools", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setManagerAuth(t, listReq, "alice@example.com")
+	listRes, err := http.DefaultClient.Do(listReq)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,11 +386,14 @@ func TestManagerRegistersWorkspaceToolAsManagedProxy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(listBody), `"HL7_JIRA_DB":{"redacted":true}`) {
-		t.Fatalf("expected public tool list to redact env values, got %s", string(listBody))
+	if !strings.Contains(string(listBody), `"kind":"local"`) || !strings.Contains(string(listBody), `"kind":"mcp"`) {
+		t.Fatalf("expected public tool inventory to include local and mcp entries, got %s", string(listBody))
 	}
-	if strings.Contains(string(listBody), `"/tools/hl7-jira-support/data/jira-data.db"`) {
-		t.Fatalf("expected public tool list to hide env values, got %s", string(listBody))
+	if !strings.Contains(string(listBody), `"name":"hl7-jira"`) || !strings.Contains(string(listBody), `"name":"hl7-jira-support"`) {
+		t.Fatalf("expected public tool inventory to include both enabled tools, got %s", string(listBody))
+	}
+	if strings.Contains(string(listBody), `"/tools/hl7-jira-support/data/jira-data.db"`) || strings.Contains(string(listBody), `"type":"manager_proxy"`) {
+		t.Fatalf("expected public tool inventory to stay minimal, got %s", string(listBody))
 	}
 
 	if len(createBodies) != 1 {
@@ -346,26 +422,12 @@ func TestManagerRegistersWorkspaceToolAsManagedProxy(t *testing.T) {
 	}
 }
 
-func TestManagerCompatibilityRoutes(t *testing.T) {
-	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/ws/health":
-			io.WriteString(w, `{"status":"ok"}`)
-		case "/ws/topics":
-			w.Header().Set("Content-Type", "application/json")
-			io.WriteString(w, `[{"name":"general","clients":0,"busy":false,"createdAt":"2026-03-10T00:00:00Z"}]`)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer runtime.Close()
-	runtimeURL, _ := url.Parse(runtime.URL)
-
+func TestManagerCompatibilityRoutesRemoved(t *testing.T) {
 	launcher := &fakeLauncher{
 		baseDir: t.TempDir(),
 		runtime: &Runtime{
 			Name:    "demo",
-			APIBase: runtimeURL,
+			APIBase: &url.URL{Scheme: "http", Host: "example.invalid"},
 			Mode:    "fake",
 			Health:  func(context.Context) error { return nil },
 			Stop:    func(context.Context) error { return nil },
@@ -378,41 +440,34 @@ func TestManagerCompatibilityRoutes(t *testing.T) {
 	server := httptest.NewServer(mgr)
 	defer server.Close()
 
-	createRes, err := http.Post(server.URL+"/workspaces", "application/json", strings.NewReader(`{"name":"demo"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	createRes.Body.Close()
-	if createRes.StatusCode != http.StatusCreated {
-		t.Fatalf("create status = %d", createRes.StatusCode)
-	}
-
-	detailRes, err := http.Get(server.URL + "/workspaces/demo")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer detailRes.Body.Close()
-	var detail map[string]any
-	if err := json.NewDecoder(detailRes.Body).Decode(&detail); err != nil {
-		t.Fatal(err)
-	}
-	if detail["api"] == "" || detail["acp"] == "" {
-		t.Fatalf("missing compatibility discovery fields: %#v", detail)
+	for _, path := range []string{
+		"/workspaces",
+		"/workspaces/demo",
+		"/acp/acme/demo/topics/general",
+	} {
+		res, err := http.Get(server.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		res.Body.Close()
+		if res.StatusCode != http.StatusNotFound {
+			t.Fatalf("expected 404 for %s, got %d", path, res.StatusCode)
+		}
 	}
 }
 
-func TestManagerACPProxy(t *testing.T) {
+func TestManagerCanonicalTopicEventsProxy(t *testing.T) {
 	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/ws/health":
 			io.WriteString(w, `{"status":"ok"}`)
-		case "/ws/topic/general":
+		case "/ws/topics/general/events":
 			conn, err := websocket.Accept(w, r, nil)
 			if err != nil {
 				t.Fatalf("accept websocket: %v", err)
 			}
 			defer conn.Close(websocket.StatusNormalClosure, "")
-			if err := conn.Write(context.Background(), websocket.MessageText, []byte(`{"type":"connected","topic":"general","sessionId":"s1"}`)); err != nil {
+			if err := conn.Write(context.Background(), websocket.MessageText, []byte(`{"type":"connected","topic":"general","protocolVersion":"workspace-topic-v1"}`)); err != nil {
 				t.Fatalf("write websocket: %v", err)
 			}
 		default:
@@ -439,13 +494,19 @@ func TestManagerACPProxy(t *testing.T) {
 	server := httptest.NewServer(mgr)
 	defer server.Close()
 
-	createRes, err := http.Post(server.URL+"/workspaces", "application/json", strings.NewReader(`{"name":"demo"}`))
+	createReq, err := http.NewRequest(http.MethodPost, server.URL+"/apis/v1/namespaces/acme/workspaces", strings.NewReader(`{"name":"demo"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	createReq.Header.Set("Content-Type", "application/json")
+	setManagerAuth(t, createReq, "alice@example.com")
+	createRes, err := http.DefaultClient.Do(createReq)
 	if err != nil {
 		t.Fatal(err)
 	}
 	createRes.Body.Close()
 
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/acp/acme/demo/topics/general"
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/apis/v1/namespaces/acme/workspaces/demo/topics/general/events"
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	conn, _, err := websocket.Dial(ctx, wsURL, nil)
@@ -453,6 +514,7 @@ func TestManagerACPProxy(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
+	authenticateManagerWS(t, ctx, conn, "alice@example.com")
 
 	_, data, err := conn.Read(ctx)
 	if err != nil {
@@ -463,21 +525,60 @@ func TestManagerACPProxy(t *testing.T) {
 	}
 }
 
-func TestManagerACPProxyRewritesBrowserOrigin(t *testing.T) {
+func TestManagerCanonicalNamespaceEvents(t *testing.T) {
+	launcher := &fakeLauncher{
+		baseDir: t.TempDir(),
+		runtime: &Runtime{
+			Name:   "demo",
+			Mode:   "fake",
+			Health: func(context.Context) error { return nil },
+			Stop:   func(context.Context) error { return nil },
+		},
+	}
+	mgr, err := New(Config{DefaultNamespace: "acme", Launcher: launcher})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(mgr)
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/apis/v1/namespaces/acme/events"
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	authenticateManagerWS(t, ctx, conn, "alice@example.com")
+
+	_, data, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"protocolVersion":"workspace-manager-v1"`) {
+		t.Fatalf("unexpected namespace events payload %s", data)
+	}
+}
+
+func TestManagerCanonicalTopicEventsProxyForwardsTrustedIdentity(t *testing.T) {
 	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/ws/health":
 			io.WriteString(w, `{"status":"ok"}`)
-		case "/ws/topic/general":
+		case "/ws/topics/general/events":
 			conn, err := websocket.Accept(w, r, nil)
 			if err != nil {
-				t.Fatalf("accept websocket with browser origin: %v", err)
+				t.Fatalf("accept websocket: %v", err)
 			}
 			defer conn.Close(websocket.StatusNormalClosure, "")
-			if got := r.Header.Get("X-Forwarded-Origin"); got == "" {
-				t.Fatal("expected proxy to preserve original browser origin")
+			if got := r.Header.Get(workspaceHeaderSubject); got != "alice@example.com" {
+				t.Fatalf("expected trusted subject header, got %q", got)
 			}
-			if err := conn.Write(context.Background(), websocket.MessageText, []byte(`{"type":"connected","topic":"general","sessionId":"s1"}`)); err != nil {
+			if got := r.Header.Get(workspaceHeaderDisplayName); got != "alice@example.com" {
+				t.Fatalf("expected trusted display-name header, got %q", got)
+			}
+			if err := conn.Write(context.Background(), websocket.MessageText, []byte(`{"type":"connected","topic":"general","protocolVersion":"workspace-topic-v1"}`)); err != nil {
 				t.Fatalf("write websocket: %v", err)
 			}
 		default:
@@ -504,13 +605,19 @@ func TestManagerACPProxyRewritesBrowserOrigin(t *testing.T) {
 	server := httptest.NewServer(mgr)
 	defer server.Close()
 
-	createRes, err := http.Post(server.URL+"/workspaces", "application/json", strings.NewReader(`{"name":"demo"}`))
+	createReq, err := http.NewRequest(http.MethodPost, server.URL+"/apis/v1/namespaces/acme/workspaces", strings.NewReader(`{"name":"demo"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	createReq.Header.Set("Content-Type", "application/json")
+	setManagerAuth(t, createReq, "alice@example.com")
+	createRes, err := http.DefaultClient.Do(createReq)
 	if err != nil {
 		t.Fatal(err)
 	}
 	createRes.Body.Close()
 
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/acp/acme/demo/topics/general"
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/apis/v1/namespaces/acme/workspaces/demo/topics/general/events"
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
@@ -522,6 +629,7 @@ func TestManagerACPProxyRewritesBrowserOrigin(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
+	authenticateManagerWS(t, ctx, conn, "alice@example.com")
 
 	_, data, err := conn.Read(ctx)
 	if err != nil {
@@ -564,13 +672,20 @@ func TestManagerDeleteStopsRuntime(t *testing.T) {
 	server := httptest.NewServer(mgr)
 	defer server.Close()
 
-	createRes, err := http.Post(server.URL+"/workspaces", "application/json", strings.NewReader(`{"name":"demo"}`))
+	createReq, err := http.NewRequest(http.MethodPost, server.URL+"/apis/v1/namespaces/acme/workspaces", strings.NewReader(`{"name":"demo"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	createReq.Header.Set("Content-Type", "application/json")
+	setManagerAuth(t, createReq, "alice@example.com")
+	createRes, err := http.DefaultClient.Do(createReq)
 	if err != nil {
 		t.Fatal(err)
 	}
 	createRes.Body.Close()
 
-	req, _ := http.NewRequest(http.MethodDelete, server.URL+"/workspaces/demo", nil)
+	req, _ := http.NewRequest(http.MethodDelete, server.URL+"/apis/v1/namespaces/acme/workspaces/demo", nil)
+	setManagerAuth(t, req, "alice@example.com")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -613,7 +728,13 @@ func TestManagerDeleteRemovesWorkspaceState(t *testing.T) {
 	server := httptest.NewServer(mgr)
 	defer server.Close()
 
-	createRes, err := http.Post(server.URL+"/workspaces", "application/json", strings.NewReader(`{"name":"demo"}`))
+	createReq, err := http.NewRequest(http.MethodPost, server.URL+"/apis/v1/namespaces/acme/workspaces", strings.NewReader(`{"name":"demo"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	createReq.Header.Set("Content-Type", "application/json")
+	setManagerAuth(t, createReq, "alice@example.com")
+	createRes, err := http.DefaultClient.Do(createReq)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -624,7 +745,8 @@ func TestManagerDeleteRemovesWorkspaceState(t *testing.T) {
 		t.Fatalf("expected workspace state dir to exist before delete: %v", err)
 	}
 
-	req, _ := http.NewRequest(http.MethodDelete, server.URL+"/workspaces/demo", nil)
+	req, _ := http.NewRequest(http.MethodDelete, server.URL+"/apis/v1/namespaces/acme/workspaces/demo", nil)
+	setManagerAuth(t, req, "alice@example.com")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -671,7 +793,13 @@ func TestManagerShutdownStopsTrackedRuntimes(t *testing.T) {
 	defer server.Close()
 
 	for _, name := range []string{"demo-a", "demo-b"} {
-		createRes, err := http.Post(server.URL+"/workspaces", "application/json", strings.NewReader(`{"name":"`+name+`"}`))
+		createReq, err := http.NewRequest(http.MethodPost, server.URL+"/apis/v1/namespaces/acme/workspaces", strings.NewReader(`{"name":"`+name+`"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		createReq.Header.Set("Content-Type", "application/json")
+		setManagerAuth(t, createReq, "alice@example.com")
+		createRes, err := http.DefaultClient.Do(createReq)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -740,7 +868,12 @@ func TestManagerLocalToolsCatalogAndWorkspaceSelection(t *testing.T) {
 	server := httptest.NewServer(mgr)
 	defer server.Close()
 
-	catalogRes, err := http.Get(server.URL + "/apis/v1/local-tools")
+	catalogReq, err := http.NewRequest(http.MethodGet, server.URL+"/apis/v1/local-tools", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setManagerAuth(t, catalogReq, "alice@example.com")
+	catalogRes, err := http.DefaultClient.Do(catalogReq)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -765,7 +898,13 @@ func TestManagerLocalToolsCatalogAndWorkspaceSelection(t *testing.T) {
 		"topics":[{"name":"bp-example-validator"}],
 		"runtime":{"localTools":["fhir-validator"]}
 	}`
-	res, err := http.Post(server.URL+"/apis/v1/namespaces/acme/workspaces", "application/json", strings.NewReader(createBody))
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/apis/v1/namespaces/acme/workspaces", strings.NewReader(createBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	setManagerAuth(t, req, "alice@example.com")
+	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -860,7 +999,13 @@ func TestManagerRecoverPersistedWorkspaces(t *testing.T) {
 	serverA := httptest.NewServer(mgrA)
 
 	createBody := `{"name":"bp-ig-fix","template":"acme-rpm-ig","topics":[{"name":"bp-example-validator"}],"runtime":{"localTools":["fhir-validator"]}}`
-	createRes, err := http.Post(serverA.URL+"/apis/v1/namespaces/acme/workspaces", "application/json", strings.NewReader(createBody))
+	createReq, err := http.NewRequest(http.MethodPost, serverA.URL+"/apis/v1/namespaces/acme/workspaces", strings.NewReader(createBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	createReq.Header.Set("Content-Type", "application/json")
+	setManagerAuth(t, createReq, "alice@example.com")
+	createRes, err := http.DefaultClient.Do(createReq)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -898,7 +1043,12 @@ func TestManagerRecoverPersistedWorkspaces(t *testing.T) {
 	serverB := httptest.NewServer(mgrB)
 	defer serverB.Close()
 
-	detailRes, err := http.Get(serverB.URL + "/apis/v1/namespaces/acme/workspaces/bp-ig-fix")
+	detailReq, err := http.NewRequest(http.MethodGet, serverB.URL+"/apis/v1/namespaces/acme/workspaces/bp-ig-fix", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setManagerAuth(t, detailReq, "alice@example.com")
+	detailRes, err := http.DefaultClient.Do(detailReq)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -980,7 +1130,13 @@ func TestManagerPatchWorkspaceLocalTools(t *testing.T) {
 	server := httptest.NewServer(mgr)
 	defer server.Close()
 
-	createRes, err := http.Post(server.URL+"/apis/v1/namespaces/acme/workspaces", "application/json", strings.NewReader(`{"name":"bp-ig-fix","topics":[{"name":"bp-example-validator"}],"runtime":{"localTools":["fhir-validator"]}}`))
+	createReq, err := http.NewRequest(http.MethodPost, server.URL+"/apis/v1/namespaces/acme/workspaces", strings.NewReader(`{"name":"bp-ig-fix","topics":[{"name":"bp-example-validator"}],"runtime":{"localTools":["fhir-validator"]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	createReq.Header.Set("Content-Type", "application/json")
+	setManagerAuth(t, createReq, "alice@example.com")
+	createRes, err := http.DefaultClient.Do(createReq)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -994,6 +1150,7 @@ func TestManagerPatchWorkspaceLocalTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	setManagerAuth(t, req, "alice@example.com")
 	patchRes, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -1092,9 +1249,14 @@ func TestManagerRejectsNonDefaultNamespaceRoutes(t *testing.T) {
 	for _, path := range []string{
 		"/apis/v1/namespaces/other/workspaces",
 		"/apis/v1/namespaces/other/workspaces/demo",
-		"/acp/other/demo/topics/general",
+		"/apis/v1/namespaces/other/events",
 	} {
-		res, err := http.Get(server.URL + path)
+		req, err := http.NewRequest(http.MethodGet, server.URL+path, nil)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		setManagerAuth(t, req, "alice@example.com")
+		res, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("GET %s: %v", path, err)
 		}
@@ -1172,7 +1334,13 @@ func TestManagerUIRoutes(t *testing.T) {
 		t.Fatalf("unexpected ws language guide body: %s", guideBody)
 	}
 
-	createRes, err := http.Post(server.URL+"/apis/v1/namespaces/acme/workspaces", "application/json", strings.NewReader(`{"name":"bp-ig-fix","topics":[{"name":"bp-example-validator"}]}`))
+	createReq, err := http.NewRequest(http.MethodPost, server.URL+"/apis/v1/namespaces/acme/workspaces", strings.NewReader(`{"name":"bp-ig-fix","topics":[{"name":"bp-example-validator"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	createReq.Header.Set("Content-Type", "application/json")
+	setManagerAuth(t, createReq, "alice@example.com")
+	createRes, err := http.DefaultClient.Do(createReq)
 	if err != nil {
 		t.Fatal(err)
 	}

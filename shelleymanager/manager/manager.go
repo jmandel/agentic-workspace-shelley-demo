@@ -33,6 +33,7 @@ type Manager struct {
 	localTools       []LocalTool
 	stateRoot        string
 	logger           *slog.Logger
+	tokenValidator   tokenValidator
 	internalBaseURL  string
 
 	mu         sync.RWMutex
@@ -102,8 +103,6 @@ type workspaceSummary struct {
 	Name      string `json:"name"`
 	Status    string `json:"status"`
 	API       string `json:"api,omitempty"`
-	ACP       string `json:"acp,omitempty"`
-	Endpoint  string `json:"endpoint,omitempty"`
 	CreatedAt string `json:"createdAt,omitempty"`
 }
 
@@ -114,8 +113,8 @@ type workspaceDetail struct {
 }
 
 type workspaceTopicRef struct {
-	Name string `json:"name"`
-	ACP  string `json:"acp,omitempty"`
+	Name   string `json:"name"`
+	Events string `json:"events,omitempty"`
 }
 
 type workspaceRuntimeInfo struct {
@@ -144,12 +143,26 @@ func New(cfg Config) (*Manager, error) {
 		localTools:       append([]LocalTool(nil), cfg.LocalTools...),
 		stateRoot:        strings.TrimSpace(cfg.StateRoot),
 		logger:           logger,
+		tokenValidator:   noneJWTTokenValidator{},
 		workspaces:       map[workspaceKey]*Workspace{},
 		events:           newEventHub(),
 	}, nil
 }
 
 func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if managerAuthRequired(r) {
+		principal, ok, err := m.authenticateRequest(r)
+		if err != nil {
+			http.Error(w, "invalid authorization token", http.StatusUnauthorized)
+			return
+		}
+		if !ok {
+			http.Error(w, "authorization required", http.StatusUnauthorized)
+			return
+		}
+		r = withRequestPrincipal(r, principal)
+	}
+
 	switch {
 	case r.URL.Path == "/":
 		m.handleHome(w, r)
@@ -167,17 +180,28 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.handleHealth(w, r)
 	case r.URL.Path == "/apis/v1/local-tools":
 		m.handleLocalTools(w, r)
-	case r.URL.Path == "/workspaces":
-		m.handleCompatCollection(w, r)
-	case strings.HasPrefix(r.URL.Path, "/workspaces/"):
-		m.handleCompatWorkspace(w, r)
 	case strings.HasPrefix(r.URL.Path, "/apis/v1/namespaces/"):
 		m.handleNamespaced(w, r)
-	case strings.HasPrefix(r.URL.Path, "/acp/"):
-		m.handleACP(w, r)
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func managerAuthRequired(r *http.Request) bool {
+	if strings.HasPrefix(r.URL.Path, "/apis/v1/") && isEventStreamWebSocketRequest(r) {
+		return false
+	}
+	return strings.HasPrefix(r.URL.Path, "/apis/v1/")
+}
+
+func isEventStreamWebSocketRequest(r *http.Request) bool {
+	if !strings.HasSuffix(r.URL.Path, "/events") {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(r.Header.Get("Upgrade")), "websocket") {
+		return false
+	}
+	return strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade")
 }
 
 func (m *Manager) Shutdown(ctx context.Context) error {
@@ -229,83 +253,9 @@ func (m *Manager) handleLocalTools(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, localToolInfos(m.localTools))
 }
 
-func (m *Manager) handleCompatCollection(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		m.writeCompatList(w, r, m.defaultNamespace)
-	case http.MethodPost:
-		m.createWorkspace(w, r, m.defaultNamespace, true)
-	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-func (m *Manager) handleCompatWorkspace(w http.ResponseWriter, r *http.Request) {
-	trimmed := strings.TrimPrefix(r.URL.Path, "/workspaces/")
-	parts := splitPath(trimmed)
-	if len(parts) == 0 {
-		http.NotFound(w, r)
-		return
-	}
-	name := parts[0]
-	if err := validateName(name); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if len(parts) == 1 {
-		switch r.Method {
-		case http.MethodGet:
-			ws, ok := m.getWorkspace(m.defaultNamespace, name)
-			if !ok {
-				http.NotFound(w, r)
-				return
-			}
-			m.writeCompatDetail(w, r, ws)
-		case http.MethodPatch:
-			m.updateWorkspace(w, r, m.defaultNamespace, name, true)
-		case http.MethodDelete:
-			m.deleteWorkspace(w, r, m.defaultNamespace, name)
-		default:
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		}
-		return
-	}
-
-	ws, ok := m.getWorkspace(m.defaultNamespace, name)
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-
-	if parts[1] == "acp" {
-		if len(parts) != 3 {
-			http.NotFound(w, r)
-			return
-		}
-		m.proxyRuntime(w, r, ws, "/ws/topic/"+parts[2])
-		return
-	}
-
-	// Intercept topic create/delete to emit lifecycle events (RFC 0009).
-	if len(parts) == 2 && parts[1] == "topics" && r.Method == http.MethodPost {
-		m.createTopicDirect(w, r, ws, m.defaultNamespace)
-		return
-	}
-	if len(parts) == 3 && parts[1] == "topics" && r.Method == http.MethodDelete {
-		m.deleteTopicDirect(w, r, ws, m.defaultNamespace, parts[2])
-		return
-	}
-	if m.handleWorkspaceToolsRoute(w, r, ws, parts[1:]) {
-		return
-	}
-
-	runtimePath := "/ws/" + strings.Join(parts[1:], "/")
-	m.proxyRuntime(w, r, ws, runtimePath)
-}
-
 func (m *Manager) handleNamespaced(w http.ResponseWriter, r *http.Request) {
 	parts := splitPath(strings.TrimPrefix(r.URL.Path, "/"))
-	if len(parts) < 5 || parts[0] != "apis" || parts[1] != "v1" || parts[2] != "namespaces" || parts[4] != "workspaces" {
+	if len(parts) < 5 || parts[0] != "apis" || parts[1] != "v1" || parts[2] != "namespaces" {
 		http.NotFound(w, r)
 		return
 	}
@@ -320,12 +270,22 @@ func (m *Manager) handleNamespaced(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(parts) == 5 && parts[4] == "events" {
+		m.handleEvents(w, r, namespace)
+		return
+	}
+
+	if parts[4] != "workspaces" {
+		http.NotFound(w, r)
+		return
+	}
+
 	if len(parts) == 5 {
 		switch r.Method {
 		case http.MethodGet:
 			m.writeSpecList(w, r, namespace)
 		case http.MethodPost:
-			m.createWorkspace(w, r, namespace, false)
+			m.createWorkspace(w, r, namespace)
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -347,7 +307,7 @@ func (m *Manager) handleNamespaced(w http.ResponseWriter, r *http.Request) {
 			}
 			m.writeSpecDetail(w, r, ws)
 		case http.MethodPatch:
-			m.updateWorkspace(w, r, namespace, name, false)
+			m.updateWorkspace(w, r, namespace, name)
 		case http.MethodDelete:
 			m.deleteWorkspace(w, r, namespace, name)
 		default:
@@ -371,6 +331,10 @@ func (m *Manager) handleNamespaced(w http.ResponseWriter, r *http.Request) {
 		m.deleteTopicDirect(w, r, ws, namespace, parts[7])
 		return
 	}
+	if len(parts) == 9 && parts[6] == "topics" && parts[8] == "events" {
+		m.handleTopicEvents(w, r, ws, parts[7])
+		return
+	}
 	if m.handleWorkspaceToolsRoute(w, r, ws, parts[6:]) {
 		return
 	}
@@ -379,47 +343,7 @@ func (m *Manager) handleNamespaced(w http.ResponseWriter, r *http.Request) {
 	m.proxyRuntime(w, r, ws, runtimePath)
 }
 
-func (m *Manager) handleACP(w http.ResponseWriter, r *http.Request) {
-	parts := splitPath(strings.TrimPrefix(r.URL.Path, "/"))
-
-	// /acp/{namespace}/events — manager lifecycle event stream (RFC 0009)
-	if len(parts) == 3 && parts[0] == "acp" && parts[2] == "events" {
-		m.handleEvents(w, r, parts[1])
-		return
-	}
-
-	if len(parts) != 5 || parts[0] != "acp" || parts[3] != "topics" {
-		http.NotFound(w, r)
-		return
-	}
-	namespace := parts[1]
-	name := parts[2]
-	topic := parts[4]
-	if err := validateName(namespace); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if namespace != m.defaultNamespace {
-		http.NotFound(w, r)
-		return
-	}
-	if err := validateName(name); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if err := validateName(topic); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	ws, ok := m.getWorkspace(namespace, name)
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	m.proxyRuntime(w, r, ws, "/ws/topic/"+topic)
-}
-
-func (m *Manager) createWorkspace(w http.ResponseWriter, r *http.Request, namespace string, compat bool) {
+func (m *Manager) createWorkspace(w http.ResponseWriter, r *http.Request, namespace string) {
 	var req workspaceCreateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
@@ -531,11 +455,6 @@ func (m *Manager) createWorkspace(w http.ResponseWriter, r *http.Request, namesp
 			"topics":    topicRefs,
 		},
 	})
-
-	if compat {
-		writeJSON(w, http.StatusCreated, m.compatDetail(r, ws, topics))
-		return
-	}
 	writeJSON(w, http.StatusCreated, m.specDetail(r, ws, topics))
 }
 
@@ -582,7 +501,7 @@ func (m *Manager) deleteWorkspace(w http.ResponseWriter, r *http.Request, namesp
 	})
 }
 
-func (m *Manager) updateWorkspace(w http.ResponseWriter, r *http.Request, namespace, name string, compat bool) {
+func (m *Manager) updateWorkspace(w http.ResponseWriter, r *http.Request, namespace, name string) {
 	ws, ok := m.getWorkspace(namespace, name)
 	if !ok {
 		http.NotFound(w, r)
@@ -606,10 +525,6 @@ func (m *Manager) updateWorkspace(w http.ResponseWriter, r *http.Request, namesp
 		return
 	}
 	if sameLocalToolSelection(ws.LocalTools, localTools) {
-		if compat {
-			m.writeCompatDetail(w, r, ws)
-			return
-		}
 		m.writeSpecDetail(w, r, ws)
 		return
 	}
@@ -659,11 +574,6 @@ func (m *Manager) updateWorkspace(w http.ResponseWriter, r *http.Request, namesp
 	if err := m.persistWorkspaceMetadata(ws); err != nil {
 		m.logger.Error("failed to persist patched workspace metadata", "namespace", namespace, "name", name, "error", err)
 	}
-
-	if compat {
-		m.writeCompatDetail(w, r, ws)
-		return
-	}
 	m.writeSpecDetail(w, r, ws)
 }
 
@@ -706,24 +616,6 @@ func sameLocalToolSelection(left, right []LocalTool) bool {
 	return slices.Equal(selectedLocalToolNames(left), selectedLocalToolNames(right))
 }
 
-func (m *Manager) writeCompatList(w http.ResponseWriter, r *http.Request, namespace string) {
-	workspaces := m.listWorkspaces(namespace)
-	resp := make([]workspaceSummary, 0, len(workspaces))
-	for _, ws := range workspaces {
-		resp = append(resp, m.compatSummary(r, ws))
-	}
-	writeJSON(w, http.StatusOK, resp)
-}
-
-func (m *Manager) writeCompatDetail(w http.ResponseWriter, r *http.Request, ws *Workspace) {
-	topics := m.runtimeTopics(r.Context(), ws)
-	names := make([]string, 0, len(topics))
-	for _, topic := range topics {
-		names = append(names, topic.Name)
-	}
-	writeJSON(w, http.StatusOK, m.compatDetail(r, ws, names))
-}
-
 func (m *Manager) writeSpecList(w http.ResponseWriter, r *http.Request, namespace string) {
 	workspaces := m.listWorkspaces(namespace)
 	resp := make([]workspaceSummary, 0, len(workspaces))
@@ -745,6 +637,7 @@ func (m *Manager) ensureTopics(ctx context.Context, ws *Workspace, topics []stri
 			return err
 		}
 		req.Header.Set("Content-Type", "application/json")
+		applyWorkspaceRuntimeIdentity(req, ctx)
 		res, err := http.DefaultClient.Do(req)
 		if err != nil {
 			return err
@@ -770,6 +663,7 @@ func (m *Manager) createTopicDirect(w http.ResponseWriter, r *http.Request, ws *
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
+	applyWorkspaceRuntimeIdentity(req, r.Context())
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		http.Error(w, "runtime unavailable", http.StatusBadGateway)
@@ -800,6 +694,7 @@ func (m *Manager) deleteTopicDirect(w http.ResponseWriter, r *http.Request, ws *
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	applyWorkspaceRuntimeIdentity(req, r.Context())
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		http.Error(w, "runtime unavailable", http.StatusBadGateway)
@@ -832,6 +727,7 @@ func (m *Manager) runtimeTopics(ctx context.Context, ws *Workspace) []runtimeTop
 	if err != nil {
 		return nil
 	}
+	applyWorkspaceRuntimeIdentity(req, ctx)
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil
@@ -860,6 +756,7 @@ func (m *Manager) proxyRuntime(w http.ResponseWriter, r *http.Request, ws *Works
 			req.Host = target.Host
 			req.URL.Path = cleanProxyPath(runtimePath)
 			req.URL.RawPath = req.URL.Path
+			applyWorkspaceRuntimeIdentity(req, r.Context())
 			// Browser websocket clients send an Origin for the manager host. Rewrite it
 			// to the private runtime origin so the runtime's same-origin websocket check
 			// accepts proxied topic connections.
@@ -898,33 +795,6 @@ func (m *Manager) listWorkspaces(namespace string) []*Workspace {
 	return workspaces
 }
 
-func (m *Manager) compatSummary(r *http.Request, ws *Workspace) workspaceSummary {
-	return workspaceSummary{
-		Name:      ws.Name,
-		Status:    m.runtimeStatus(r.Context(), ws),
-		API:       m.compatAPIBase(r, ws),
-		ACP:       m.compatACPBase(r, ws),
-		CreatedAt: ws.CreatedAt.Format(time.RFC3339),
-	}
-}
-
-func (m *Manager) compatDetail(r *http.Request, ws *Workspace, topics []string) map[string]any {
-	resp := map[string]any{
-		"name":      ws.Name,
-		"status":    m.runtimeStatus(r.Context(), ws),
-		"api":       m.compatAPIBase(r, ws),
-		"acp":       m.compatACPBase(r, ws),
-		"createdAt": ws.CreatedAt.Format(time.RFC3339),
-	}
-	if len(topics) > 0 {
-		resp["topics"] = topics
-	}
-	if len(ws.LocalTools) > 0 {
-		resp["runtime"] = workspaceRuntimeInfo{LocalTools: localToolInfos(ws.LocalTools)}
-	}
-	return resp
-}
-
 func (m *Manager) specSummary(r *http.Request, ws *Workspace) workspaceSummary {
 	return workspaceSummary{
 		ID:        workspaceID(ws),
@@ -932,7 +802,6 @@ func (m *Manager) specSummary(r *http.Request, ws *Workspace) workspaceSummary {
 		Name:      ws.Name,
 		Status:    m.runtimeStatus(r.Context(), ws),
 		API:       m.specAPIBase(r, ws),
-		Endpoint:  m.specACPBase(r, ws),
 		CreatedAt: ws.CreatedAt.Format(time.RFC3339),
 	}
 }
@@ -952,7 +821,6 @@ func (m *Manager) specDetail(r *http.Request, ws *Workspace, topics []string) wo
 			Name:      ws.Name,
 			Status:    m.runtimeStatus(r.Context(), ws),
 			API:       m.specAPIBase(r, ws),
-			Endpoint:  m.specACPBase(r, ws),
 			CreatedAt: ws.CreatedAt.Format(time.RFC3339),
 		},
 	}
@@ -961,8 +829,8 @@ func (m *Manager) specDetail(r *http.Request, ws *Workspace, topics []string) wo
 	}
 	for _, topic := range topics {
 		resp.Topics = append(resp.Topics, workspaceTopicRef{
-			Name: topic,
-			ACP:  m.specACPBase(r, ws) + "/topics/" + topic,
+			Name:   topic,
+			Events: m.specTopicEventsURL(r, ws, topic),
 		})
 	}
 	return resp
@@ -980,20 +848,12 @@ func (m *Manager) runtimeStatus(ctx context.Context, ws *Workspace) string {
 	return "running"
 }
 
-func (m *Manager) compatAPIBase(r *http.Request, ws *Workspace) string {
-	return requestBase(r, false) + "/workspaces/" + ws.Name
-}
-
-func (m *Manager) compatACPBase(r *http.Request, ws *Workspace) string {
-	return requestBase(r, true) + "/workspaces/" + ws.Name + "/acp"
-}
-
 func (m *Manager) specAPIBase(r *http.Request, ws *Workspace) string {
 	return requestBase(r, false) + "/apis/v1/namespaces/" + ws.Namespace + "/workspaces/" + ws.Name
 }
 
-func (m *Manager) specACPBase(r *http.Request, ws *Workspace) string {
-	return requestBase(r, true) + "/acp/" + ws.Namespace + "/" + ws.Name
+func (m *Manager) specTopicEventsURL(r *http.Request, ws *Workspace, topic string) string {
+	return m.specAPIBase(r, ws) + "/topics/" + url.PathEscape(topic) + "/events"
 }
 
 func decodeTopics(raw json.RawMessage) ([]string, error) {

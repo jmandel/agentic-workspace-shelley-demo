@@ -24,14 +24,12 @@ export interface WorkspaceSummary {
   name: string;
   status: string;
   api?: string;
-  acp?: string;
-  endpoint?: string;
   createdAt?: string;
 }
 
 export interface WorkspaceTopicRef {
   name: string;
-  acp?: string;
+  events?: string;
 }
 
 export interface WorkspaceRuntimeInfo {
@@ -71,6 +69,7 @@ export interface TopicInfo {
 
 export interface QueueSubmitter {
   id: string;
+  displayName?: string;
 }
 
 export interface QueueEntry {
@@ -89,6 +88,7 @@ export interface QueueSnapshot {
 // --- WebSocket message types ---
 
 export type TopicMessageType =
+  | "authenticated"
   | "connected"
   | "prompt_status"
   | "queue_snapshot"
@@ -107,8 +107,8 @@ export type TopicMessageType =
 
 export interface TopicMessage {
   type: TopicMessageType;
+  actor?: QueueSubmitter;
   data?: string;
-  sessionId?: string;
   promptId?: string;
   status?: string;
   position?: number;
@@ -132,6 +132,7 @@ export interface TopicMessage {
 // --- Manager lifecycle event types (RFC 0009) ---
 
 export type ManagerEventType =
+  | "authenticated"
   | "connected"
   | "workspace_created"
   | "workspace_deleted"
@@ -141,10 +142,10 @@ export type ManagerEventType =
 
 export interface ManagerEvent {
   type: ManagerEventType;
+  actor?: QueueSubmitter;
   eventId?: string;
   timestamp?: string;
   replay?: boolean;
-  sessionId?: string;
   protocolVersion?: string;
   namespace?: string;
   workspace?:
