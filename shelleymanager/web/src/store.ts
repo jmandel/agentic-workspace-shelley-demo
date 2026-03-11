@@ -35,7 +35,11 @@ function msgId(): string {
 // Connection status
 // ---------------------------------------------------------------------------
 
-export type ConnectionStatus = "idle" | "connecting" | "connected" | "disconnected";
+export type ConnectionStatus =
+  | "idle"
+  | "connecting"
+  | "connected"
+  | "disconnected";
 
 // ---------------------------------------------------------------------------
 // Store shape
@@ -63,7 +67,10 @@ interface AppState {
   workspaces: WorkspaceDetail[];
   workspacesLoading: boolean;
   fetchWorkspaces: () => Promise<void>;
-  fetchWorkspaceDetail: (name: string) => Promise<WorkspaceDetail>;
+  fetchWorkspaceDetail: (
+    name: string,
+    namespaceOverride?: string,
+  ) => Promise<WorkspaceDetail>;
   deleteWorkspace: (name: string) => Promise<void>;
   deleteTopic: (workspace: string, topic: string) => Promise<void>;
   createTopic: (workspace: string, topic: string) => Promise<void>;
@@ -110,7 +117,9 @@ const initialIdentity = loadClientIdentity();
 
 const EMPTY_QUEUE: QueueSnapshot = { activePromptId: "", entries: [] };
 
-function normalizeQueue(raw: Partial<QueueSnapshot> | undefined): QueueSnapshot {
+function normalizeQueue(
+  raw: Partial<QueueSnapshot> | undefined,
+): QueueSnapshot {
   return {
     activePromptId: raw?.activePromptId ?? "",
     entries: Array.isArray(raw?.entries) ? (raw.entries as QueueEntry[]) : [],
@@ -143,7 +152,10 @@ export const useStore = create<AppState>((set, get) => ({
         }
       : null;
 
-    set({ participantName: identity.displayName, participantSubject: identity.subject });
+    set({
+      participantName: identity.displayName,
+      participantSubject: identity.subject,
+    });
 
     if (state._eventsWs !== null && state.namespaceLoaded) {
       state.connectManagerEvents(state.namespace);
@@ -186,7 +198,11 @@ export const useStore = create<AppState>((set, get) => ({
     const tools = await api.fetchLocalTools();
     const preferred = tools?.find((tool) => tool.exposure !== "support_bundle");
     const selected = preferred ? new Set([preferred.name]) : new Set<string>();
-    set({ localTools: tools ?? [], localToolsLoaded: true, selectedLocalTools: selected });
+    set({
+      localTools: tools ?? [],
+      localToolsLoaded: true,
+      selectedLocalTools: selected,
+    });
   },
   toggleLocalTool: (name: string) => {
     const prev = get().selectedLocalTools;
@@ -218,13 +234,17 @@ export const useStore = create<AppState>((set, get) => ({
       set({ workspacesLoading: false });
     }
   },
-  fetchWorkspaceDetail: async (name: string) => {
-    const { namespace } = get();
+  fetchWorkspaceDetail: async (name: string, namespaceOverride?: string) => {
+    const namespace = namespaceOverride || get().namespace;
+    const workspaceMatches = (ws: WorkspaceDetail) => {
+      const wsNamespace = ws.namespace || namespace;
+      return ws.name === name && wsNamespace === namespace;
+    };
     const detail = await api.getWorkspace(namespace, name);
     set((state) => ({
-      workspaces: state.workspaces.map((ws) =>
-        ws.name === name ? detail : ws,
-      ),
+      workspaces: state.workspaces.some(workspaceMatches)
+        ? state.workspaces.map((ws) => (workspaceMatches(ws) ? detail : ws))
+        : [...state.workspaces, detail],
     }));
     return detail;
   },
@@ -274,22 +294,23 @@ export const useStore = create<AppState>((set, get) => ({
         get().fetchWorkspaces();
       },
       onMessage: (msg) => {
-      // Skip replay events — we already fetched the full list above.
+        // Skip replay events — we already fetched the full list above.
         if (msg.replay) return;
 
-        const wsName = typeof msg.workspace === "string"
-          ? msg.workspace
-          : msg.workspace?.name;
-        const topicName = typeof msg.topic === "string"
-          ? msg.topic
-          : msg.topic?.name;
+        const wsName =
+          typeof msg.workspace === "string"
+            ? msg.workspace
+            : msg.workspace?.name;
+        const topicName =
+          typeof msg.topic === "string" ? msg.topic : msg.topic?.name;
 
         switch (msg.type) {
           case "workspace_created": {
             if (!wsName) break;
             const exists = get().workspaces.some((w) => w.name === wsName);
             if (!exists) {
-              const wsObj = typeof msg.workspace === "object" ? msg.workspace : undefined;
+              const wsObj =
+                typeof msg.workspace === "object" ? msg.workspace : undefined;
               const stub: WorkspaceDetail = {
                 name: wsName,
                 status: wsObj?.status ?? "running",
@@ -299,7 +320,9 @@ export const useStore = create<AppState>((set, get) => ({
               set((state) => ({ workspaces: [...state.workspaces, stub] }));
             }
             // Fetch full detail (has runtime info, etc.).
-            get().fetchWorkspaceDetail(wsName).catch(() => {});
+            get()
+              .fetchWorkspaceDetail(wsName)
+              .catch(() => {});
             break;
           }
 
@@ -313,7 +336,8 @@ export const useStore = create<AppState>((set, get) => ({
 
           case "workspace_status_changed": {
             if (!wsName) break;
-            const wsObj = typeof msg.workspace === "object" ? msg.workspace : undefined;
+            const wsObj =
+              typeof msg.workspace === "object" ? msg.workspace : undefined;
             const status = wsObj?.status;
             if (status) {
               set((state) => ({
@@ -347,7 +371,10 @@ export const useStore = create<AppState>((set, get) => ({
               set((state) => ({
                 workspaces: state.workspaces.map((w) =>
                   w.name === wsName
-                    ? { ...w, topics: w.topics?.filter((t) => t.name !== topicName) }
+                    ? {
+                        ...w,
+                        topics: w.topics?.filter((t) => t.name !== topicName),
+                      }
                     : w,
                 ),
               }));
@@ -400,9 +427,11 @@ export const useStore = create<AppState>((set, get) => ({
       setStatus: (connectionStatus) => set({ connectionStatus }),
       shouldReconnect: () => {
         const current = get().topicConnection;
-        return current?.namespace === namespace &&
+        return (
+          current?.namespace === namespace &&
           current?.workspace === workspace &&
-          current?.topic === topic;
+          current?.topic === topic
+        );
       },
       reconnect: () => get().connectTopic(namespace, workspace, topic),
       onConnected: () => {
@@ -411,98 +440,121 @@ export const useStore = create<AppState>((set, get) => ({
       onMessage: (msg) => {
         const { pushMessage } = get();
         switch (msg.type) {
-        case "prompt_status":
-          if (msg.status === "started") set({ turnActive: true });
-          if (msg.status === "completed" || msg.status === "failed" || msg.status === "cancelled") {
-            set({ turnActive: false });
+          case "prompt_status":
+            if (msg.status === "started") set({ turnActive: true });
+            if (
+              msg.status === "completed" ||
+              msg.status === "failed" ||
+              msg.status === "cancelled"
+            ) {
+              set({ turnActive: false });
+            }
+            get().refreshQueue();
+            break;
+          case "queue_snapshot": {
+            const q = normalizeQueue(msg);
+            set({ queue: q, turnActive: !!msg.activePromptId });
+            break;
           }
-          get().refreshQueue();
-          break;
-        case "queue_snapshot": {
-          const q = normalizeQueue(msg);
-          set({ queue: q, turnActive: !!msg.activePromptId });
-          break;
-        }
-        case "queue_entry_updated":
-        case "queue_entry_moved":
-        case "queue_entry_removed":
-        case "queue_cleared":
-          get().refreshQueue();
-          break;
-        case "user":
-          pushMessage(
-            "user",
-            msg.submittedBy?.displayName ?? msg.submittedBy?.id ?? "User",
-            msg.data ?? "",
-          );
-          break;
-        case "text":
-          // Append to the last assistant message if streaming, otherwise create new
-          set((state) => {
-            const last = state.messages[state.messages.length - 1];
-            if (last?.kind === "assistant") {
+          case "queue_entry_updated":
+          case "queue_entry_moved":
+          case "queue_entry_removed":
+          case "queue_cleared":
+            get().refreshQueue();
+            break;
+          case "user":
+            pushMessage(
+              "user",
+              msg.submittedBy?.displayName ?? msg.submittedBy?.id ?? "User",
+              msg.data ?? "",
+            );
+            break;
+          case "text":
+            // Append to the last assistant message if streaming, otherwise create new
+            set((state) => {
+              const last = state.messages[state.messages.length - 1];
+              if (last?.kind === "assistant") {
+                return {
+                  messages: [
+                    ...state.messages.slice(0, -1),
+                    { ...last, body: last.body + (msg.data ?? "") },
+                  ],
+                };
+              }
               return {
                 messages: [
-                  ...state.messages.slice(0, -1),
-                  { ...last, body: last.body + (msg.data ?? "") },
+                  ...state.messages,
+                  {
+                    id: msgId(),
+                    kind: "assistant" as const,
+                    label: "Shelley",
+                    body: msg.data ?? "",
+                    ts: Date.now(),
+                  },
                 ],
               };
-            }
-            return {
-              messages: [
-                ...state.messages,
-                { id: msgId(), kind: "assistant" as const, label: "Shelley", body: msg.data ?? "", ts: Date.now() },
-              ],
-            };
-          });
-          break;
-        case "tool_call": {
-          let toolBody = msg.status ?? "pending";
-          if (msg.rawInput) {
-            try {
-              const input = msg.rawInput;
-              // For bash-like tools, show the command directly
-              if (typeof input.command === "string") {
-                toolBody = input.command;
-              } else {
-                toolBody = JSON.stringify(input);
+            });
+            break;
+          case "tool_call": {
+            let toolBody = msg.status ?? "pending";
+            if (msg.rawInput) {
+              try {
+                const input = msg.rawInput;
+                // For bash-like tools, show the command directly
+                if (typeof input.command === "string") {
+                  toolBody = input.command;
+                } else {
+                  toolBody = JSON.stringify(input);
+                }
+              } catch {
+                /* fall back to status */
               }
-            } catch { /* fall back to status */ }
+            }
+            pushMessage("tool", msg.title ?? msg.tool ?? "Tool", toolBody);
+            break;
           }
-          pushMessage("tool", msg.title ?? msg.tool ?? "Tool", toolBody);
-          break;
-        }
-        case "tool_update":
-          pushMessage(
-            "tool",
-            "Tool Update",
-            `${msg.title ?? msg.tool ?? ""} · ${msg.status ?? ""}${msg.data ? `\n\n${msg.data}` : ""}`,
-          );
-          break;
-        case "system":
-          // System events (e.g. "thinking...") are reflected by turnActive state
-          break;
-        case "error":
-          pushMessage("error", "Error", msg.data ?? "Unknown error");
-          break;
-        case "done":
-          if (msg.status === "interrupted") {
-            const who = msg.interruptedBy?.displayName ?? msg.interruptedBy?.id ?? "someone";
-            pushMessage("interrupted", "Interrupted", msg.reason ? `${who}: ${msg.reason}` : `Stopped by ${who}`);
-          }
-          // Normal turn completion is reflected by turnActive state
-          set({ turnActive: false });
-          get().refreshQueue();
-          break;
-        case "inject_status":
-          // Inject failures surface as errors; success is silent
-          if (msg.status === "rejected") {
-            pushMessage("error", "Inject", `Injection rejected (no active turn)`);
-          }
-          break;
-        default:
-          // Unknown event types — ignore silently
-          break;
+          case "tool_update":
+            pushMessage(
+              "tool",
+              "Tool Update",
+              `${msg.title ?? msg.tool ?? ""} · ${msg.status ?? ""}${msg.data ? `\n\n${msg.data}` : ""}`,
+            );
+            break;
+          case "system":
+            // System events (e.g. "thinking...") are reflected by turnActive state
+            break;
+          case "error":
+            pushMessage("error", "Error", msg.data ?? "Unknown error");
+            break;
+          case "done":
+            if (msg.status === "interrupted") {
+              const who =
+                msg.interruptedBy?.displayName ??
+                msg.interruptedBy?.id ??
+                "someone";
+              pushMessage(
+                "interrupted",
+                "Interrupted",
+                msg.reason ? `${who}: ${msg.reason}` : `Stopped by ${who}`,
+              );
+            }
+            // Normal turn completion is reflected by turnActive state
+            set({ turnActive: false });
+            get().refreshQueue();
+            break;
+          case "inject_status":
+            // Inject failures surface as errors; success is silent
+            if (msg.status === "rejected") {
+              pushMessage(
+                "error",
+                "Inject",
+                `Injection rejected (no active turn)`,
+              );
+            }
+            break;
+          default:
+            // Unknown event types — ignore silently
+            break;
         }
       },
     });
@@ -566,7 +618,10 @@ export const useStore = create<AppState>((set, get) => ({
     const text = entry?.text ?? "";
     // Cancel the queue entry
     await api.cancelQueuedPrompt(
-      conn.namespace, conn.workspace, conn.topic, promptId,
+      conn.namespace,
+      conn.workspace,
+      conn.topic,
+      promptId,
     );
     // Inject its text into the active turn
     if (text) {

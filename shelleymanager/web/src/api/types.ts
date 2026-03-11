@@ -30,6 +30,7 @@ export interface WorkspaceSummary {
 export interface WorkspaceTopicRef {
   name: string;
   events?: string;
+  shelley?: string;
 }
 
 export interface WorkspaceRuntimeInfo {

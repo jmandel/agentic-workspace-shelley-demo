@@ -23,8 +23,11 @@ export function TopicPage() {
   const queue = useStore((s) => s.queue);
   const sendPrompt = useStore((s) => s.sendPrompt);
   const sendInterrupt = useStore((s) => s.sendInterrupt);
+  const workspaces = useStore((s) => s.workspaces);
+  const fetchWorkspaceDetail = useStore((s) => s.fetchWorkspaceDetail);
 
   const [prompt, setPrompt] = useState("");
+  const [showCLI, setShowCLI] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -32,6 +35,11 @@ export function TopicPage() {
     connectTopic(namespace, workspace, topic);
     return () => disconnectTopic();
   }, [namespace, workspace, topic]);
+
+  useEffect(() => {
+    if (!workspace) return;
+    void fetchWorkspaceDetail(workspace, namespace);
+  }, [fetchWorkspaceDetail, namespace, workspace]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -48,7 +56,11 @@ export function TopicPage() {
     navigate("/");
   };
 
-  const shelleyHref = `/shelley/${encodeURIComponent(namespace)}/${encodeURIComponent(workspace)}/${encodeURIComponent(topic)}`;
+  const workspaceDetail = workspaces.find(
+    (ws) => ws.namespace === namespace && ws.name === workspace,
+  );
+  const topicRef = workspaceDetail?.topics?.find((item) => item.name === topic);
+  const shelleyHref = topicRef?.shelley;
   const cliCommand = `WS_MANAGER=${window.location.origin} bun run cli.ts connect ${workspace} ${topic}`;
 
   return (
@@ -57,22 +69,44 @@ export function TopicPage() {
       <div className="card" style={{ flexShrink: 0 }}>
         <div className="row row-between" style={{ gap: 12 }}>
           <div className="topic-breadcrumbs">
-            <Link href="/" style={{ color: "var(--muted)", textDecoration: "none", fontSize: 13 }}>
+            <Link
+              href="/"
+              style={{
+                color: "var(--muted)",
+                textDecoration: "none",
+                fontSize: 13,
+              }}
+            >
               Workspaces
             </Link>
-            <span className="muted" style={{ fontSize: 13 }}>/</span>
+            <span className="muted" style={{ fontSize: 13 }}>
+              /
+            </span>
             <Link
               href={`/app/${encodeURIComponent(namespace)}/${encodeURIComponent(workspace)}`}
-              style={{ fontSize: 13, fontWeight: 500, textDecoration: "none", color: "inherit" }}
+              style={{
+                fontSize: 13,
+                fontWeight: 500,
+                textDecoration: "none",
+                color: "inherit",
+              }}
             >
               {workspace}
             </Link>
-            <span className="muted" style={{ fontSize: 13 }}>/</span>
+            <span className="muted" style={{ fontSize: 13 }}>
+              /
+            </span>
             <span className="topic-breadcrumb-current">{topic}</span>
           </div>
           <div className="row" style={{ gap: 6 }}>
-            <span className="status-dot" data-status={connectionStatus} title={connectionStatus} />
-            <span className="muted" style={{ fontSize: 12 }}>{connectionStatus}</span>
+            <span
+              className="status-dot"
+              data-status={connectionStatus}
+              title={connectionStatus}
+            />
+            <span className="muted" style={{ fontSize: 12 }}>
+              {connectionStatus}
+            </span>
           </div>
         </div>
         <div className="topic-header-body">
@@ -88,22 +122,36 @@ export function TopicPage() {
                 <Link href="/ws-language" className="btn btn-secondary btn-sm">
                   WS Reference
                 </Link>
-                <a href={shelleyHref} className="btn btn-secondary btn-sm" target="_blank" rel="noopener noreferrer">
-                  Open in Shelley
-                </a>
-                <button className="btn btn-danger btn-sm" onClick={handleDeleteTopic}>
+                {shelleyHref && (
+                  <a
+                    href={shelleyHref}
+                    className="btn btn-secondary btn-sm"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Open in Shelley
+                  </a>
+                )}
+                <button
+                  className="btn btn-secondary btn-sm"
+                  type="button"
+                  onClick={() => setShowCLI((value) => !value)}
+                >
+                  Open in CLI
+                </button>
+                <button
+                  className="btn btn-danger btn-sm"
+                  onClick={handleDeleteTopic}
+                >
                   Delete Topic
                 </button>
               </div>
             </section>
           </div>
 
-          <details className="topic-cli-details">
-            <summary className="muted" style={{ fontSize: 12, cursor: "pointer" }}>
-              Open in CLI
-            </summary>
+          {showCLI && (
             <pre style={{ marginTop: 8, fontSize: 11 }}>{cliCommand}</pre>
-          </details>
+          )}
         </div>
       </div>
 
@@ -116,8 +164,13 @@ export function TopicPage() {
       {turnActive && (
         <div className="row row-between turn-bar" style={{ flexShrink: 0 }}>
           <span className="muted" style={{ fontSize: 13 }}>
-            <span className="status-dot" data-status="running" style={{ marginRight: 6 }} />
-            Agent is working{queue.activePromptId ? ` (${queue.activePromptId})` : ""}
+            <span
+              className="status-dot"
+              data-status="running"
+              style={{ marginRight: 6 }}
+            />
+            Agent is working
+            {queue.activePromptId ? ` (${queue.activePromptId})` : ""}
           </span>
           <button
             className="btn-stop btn-sm"
@@ -162,7 +215,9 @@ export function TopicPage() {
             </button>
             {connectionStatus !== "connected" && (
               <span className="muted" style={{ fontSize: 12 }}>
-                {connectionStatus === "connecting" ? "Connecting..." : "Disconnected"}
+                {connectionStatus === "connecting"
+                  ? "Connecting..."
+                  : "Disconnected"}
               </span>
             )}
           </div>

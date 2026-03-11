@@ -456,6 +456,91 @@ func TestManagerCompatibilityRoutesRemoved(t *testing.T) {
 	}
 }
 
+func TestManagerShelleyUILinksDisabled(t *testing.T) {
+	mgr, err := New(Config{
+		DefaultNamespace: "acme",
+		Launcher:         &fakeLauncher{baseDir: t.TempDir()},
+		ShelleyUIMode:    "disabled",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ws := &Workspace{
+		Namespace: "acme",
+		Name:      "demo",
+		Runtime: Runtime{
+			APIBase: &url.URL{Scheme: "http", Host: "127.0.0.1:12345"},
+		},
+	}
+	mgr.workspaces[workspaceKey{namespace: "acme", name: "demo"}] = ws
+
+	req := httptest.NewRequest(http.MethodGet, "/apis/v1/namespaces/acme/workspaces/demo", nil)
+	req.Host = "agentic-workspace.exe.xyz"
+	setManagerAuth(t, req, "alice@example.com")
+
+	detail := mgr.specDetail(req, ws, []string{"general"})
+	if len(detail.Topics) != 1 {
+		t.Fatalf("expected one topic, got %#v", detail.Topics)
+	}
+	if detail.Topics[0].Shelley != "" {
+		t.Fatalf("expected no Shelley URL in disabled mode, got %#v", detail.Topics[0])
+	}
+
+	redirectReq := httptest.NewRequest(http.MethodGet, "/shelley/acme/demo/general", nil)
+	redirectReq.Host = "agentic-workspace.exe.xyz"
+	redirectRes := httptest.NewRecorder()
+	mgr.ServeHTTP(redirectRes, redirectReq)
+	if redirectRes.Code != http.StatusNotFound {
+		t.Fatalf("expected disabled Shelley route to 404, got %d", redirectRes.Code)
+	}
+}
+
+func TestManagerShelleyUILinksSameHostPort(t *testing.T) {
+	mgr, err := New(Config{
+		DefaultNamespace: "acme",
+		Launcher:         &fakeLauncher{baseDir: t.TempDir()},
+		ShelleyUIMode:    "same_host_port",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ws := &Workspace{
+		Namespace: "acme",
+		Name:      "demo",
+		Runtime: Runtime{
+			APIBase: &url.URL{Scheme: "http", Host: "127.0.0.1:12345"},
+		},
+	}
+	mgr.workspaces[workspaceKey{namespace: "acme", name: "demo"}] = ws
+
+	req := httptest.NewRequest(http.MethodGet, "/apis/v1/namespaces/acme/workspaces/demo", nil)
+	req.Host = "agentic-workspace.exe.xyz"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	setManagerAuth(t, req, "alice@example.com")
+
+	detail := mgr.specDetail(req, ws, []string{"general"})
+	if len(detail.Topics) != 1 {
+		t.Fatalf("expected one topic, got %#v", detail.Topics)
+	}
+	if got, want := detail.Topics[0].Shelley, "https://agentic-workspace.exe.xyz:12345/c/general"; got != want {
+		t.Fatalf("Shelley URL = %q, want %q", got, want)
+	}
+
+	redirectReq := httptest.NewRequest(http.MethodGet, "/shelley/acme/demo/general", nil)
+	redirectReq.Host = "agentic-workspace.exe.xyz"
+	redirectReq.Header.Set("X-Forwarded-Proto", "https")
+	redirectRes := httptest.NewRecorder()
+	mgr.ServeHTTP(redirectRes, redirectReq)
+	if redirectRes.Code != http.StatusFound {
+		t.Fatalf("expected Shelley redirect, got %d", redirectRes.Code)
+	}
+	if got, want := redirectRes.Header().Get("Location"), "https://agentic-workspace.exe.xyz:12345/c/general"; got != want {
+		t.Fatalf("redirect location = %q, want %q", got, want)
+	}
+}
+
 func TestManagerCanonicalTopicEventsProxy(t *testing.T) {
 	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {

@@ -62,7 +62,10 @@ export function WorkspaceCard({ workspace: ws }: Props) {
             </div>
           )}
         </div>
-        <button className="btn btn-danger btn-sm" onClick={handleDeleteWorkspace}>
+        <button
+          className="btn btn-danger btn-sm"
+          onClick={handleDeleteWorkspace}
+        >
           Delete Workspace
         </button>
       </div>
@@ -81,12 +84,16 @@ export function WorkspaceCard({ workspace: ws }: Props) {
                   >
                     Open
                   </Link>
-                  <a
-                    href={`/shelley/${encodeURIComponent(ns)}/${encodeURIComponent(ws.name)}/${encodeURIComponent(t.name)}`}
-                    className="btn btn-secondary btn-sm"
-                  >
-                    Shelley UI
-                  </a>
+                  {t.shelley && (
+                    <a
+                      href={t.shelley}
+                      className="btn btn-secondary btn-sm"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      Shelley UI
+                    </a>
+                  )}
                   <button
                     className="btn btn-secondary btn-sm"
                     onClick={() => handleDeleteTopic(t.name)}

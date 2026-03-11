@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -24,6 +25,7 @@ type Config struct {
 	Launcher         Launcher
 	LocalTools       []LocalTool
 	StateRoot        string
+	ShelleyUIMode    string
 	Logger           *slog.Logger
 }
 
@@ -32,6 +34,7 @@ type Manager struct {
 	launcher         Launcher
 	localTools       []LocalTool
 	stateRoot        string
+	shelleyUIMode    string
 	logger           *slog.Logger
 	tokenValidator   tokenValidator
 	internalBaseURL  string
@@ -113,8 +116,9 @@ type workspaceDetail struct {
 }
 
 type workspaceTopicRef struct {
-	Name   string `json:"name"`
-	Events string `json:"events,omitempty"`
+	Name    string `json:"name"`
+	Events  string `json:"events,omitempty"`
+	Shelley string `json:"shelley,omitempty"`
 }
 
 type workspaceRuntimeInfo struct {
@@ -137,11 +141,16 @@ func New(cfg Config) (*Manager, error) {
 	if namespace == "" {
 		namespace = "default"
 	}
+	shelleyUIMode := normalizeShelleyUIMode(cfg.ShelleyUIMode)
+	if shelleyUIMode == "" {
+		return nil, errors.New("invalid Shelley UI mode")
+	}
 	return &Manager{
 		defaultNamespace: namespace,
 		launcher:         cfg.Launcher,
 		localTools:       append([]LocalTool(nil), cfg.LocalTools...),
 		stateRoot:        strings.TrimSpace(cfg.StateRoot),
+		shelleyUIMode:    shelleyUIMode,
 		logger:           logger,
 		tokenValidator:   noneJWTTokenValidator{},
 		workspaces:       map[workspaceKey]*Workspace{},
@@ -829,8 +838,9 @@ func (m *Manager) specDetail(r *http.Request, ws *Workspace, topics []string) wo
 	}
 	for _, topic := range topics {
 		resp.Topics = append(resp.Topics, workspaceTopicRef{
-			Name:   topic,
-			Events: m.specTopicEventsURL(r, ws, topic),
+			Name:    topic,
+			Events:  m.specTopicEventsURL(r, ws, topic),
+			Shelley: m.specShelleyURL(r, ws, topic),
 		})
 	}
 	return resp
@@ -854,6 +864,28 @@ func (m *Manager) specAPIBase(r *http.Request, ws *Workspace) string {
 
 func (m *Manager) specTopicEventsURL(r *http.Request, ws *Workspace, topic string) string {
 	return m.specAPIBase(r, ws) + "/topics/" + url.PathEscape(topic) + "/events"
+}
+
+func normalizeShelleyUIMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "disabled":
+		return "disabled"
+	case "same_host_port":
+		return "same_host_port"
+	default:
+		return ""
+	}
+}
+
+func (m *Manager) specShelleyURL(r *http.Request, ws *Workspace, topic string) string {
+	switch m.shelleyUIMode {
+	case "disabled":
+		return ""
+	case "same_host_port":
+		return sameHostPortShelleyURL(r, ws, topic)
+	default:
+		return ""
+	}
 }
 
 func decodeTopics(raw json.RawMessage) ([]string, error) {
@@ -918,7 +950,52 @@ func requestBase(r *http.Request, websocket bool) string {
 			scheme = "https"
 		}
 	}
-	return scheme + "://" + r.Host
+	return scheme + "://" + requestHost(r)
+}
+
+func requestHost(r *http.Request) string {
+	if forwarded := strings.TrimSpace(r.Header.Get("X-Forwarded-Host")); forwarded != "" {
+		if idx := strings.Index(forwarded, ","); idx >= 0 {
+			forwarded = forwarded[:idx]
+		}
+		if forwarded = strings.TrimSpace(forwarded); forwarded != "" {
+			return forwarded
+		}
+	}
+	return r.Host
+}
+
+func sameHostPortShelleyURL(r *http.Request, ws *Workspace, topic string) string {
+	if ws == nil || ws.Runtime.APIBase == nil {
+		return ""
+	}
+	runtimePort := strings.TrimSpace(ws.Runtime.APIBase.Port())
+	if runtimePort == "" {
+		return ""
+	}
+	publicHost := requestHost(r)
+	if publicHost == "" {
+		return ""
+	}
+	baseURL, err := url.Parse(requestBase(r, false))
+	if err != nil {
+		return ""
+	}
+	hostname := baseURL.Hostname()
+	if hostname == "" {
+		return ""
+	}
+	baseURL.Host = net.JoinHostPort(hostname, runtimePort)
+	basePath := ws.Runtime.APIBase.Path
+	if strings.TrimSpace(topic) == "" {
+		baseURL.Path = cleanProxyPath(basePath)
+	} else {
+		baseURL.Path = cleanProxyPath(path.Join(basePath, "c", topic))
+	}
+	baseURL.RawPath = baseURL.Path
+	baseURL.RawQuery = ""
+	baseURL.Fragment = ""
+	return baseURL.String()
 }
 
 func workspaceID(ws *Workspace) string {

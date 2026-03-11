@@ -22,6 +22,7 @@ func main() {
 		PortFile          string
 		Namespace         string
 		StateDir          string
+		ShelleyUIMode     string
 		RuntimeMode       string
 		ShelleyBinary     string
 		SharedToolsDir    string
@@ -40,6 +41,7 @@ func main() {
 	flag.StringVar(&cfg.PortFile, "port-file", "", "Write actual listening port to this file")
 	flag.StringVar(&cfg.Namespace, "namespace", "default", "Default namespace for compatibility /workspaces routes")
 	flag.StringVar(&cfg.StateDir, "state-dir", ".shelleymanager-state", "State root for manager metadata, logs, and runtime workspace dirs")
+	flag.StringVar(&cfg.ShelleyUIMode, "shelley-ui-mode", envOrDefault("SHELLEY_UI_MODE", "disabled"), "Shelley UI exposure mode: disabled or same_host_port")
 	flag.StringVar(&cfg.RuntimeMode, "runtime-mode", "process", "Runtime launch mode: process, docker, or bwrap")
 	flag.StringVar(&cfg.ShelleyBinary, "shelley-binary", "", "Path to Shelley binary for process/bwrap launch modes")
 	flag.StringVar(&cfg.SharedToolsDir, "tools-dir", "", "Optional shared host tools dir mounted read-only into runtimes at /tools")
@@ -91,6 +93,7 @@ func main() {
 		Launcher:         launcher,
 		LocalTools:       localTools,
 		StateRoot:        cfg.StateDir,
+		ShelleyUIMode:    cfg.ShelleyUIMode,
 		Logger:           logger,
 	})
 	if err != nil {
@@ -146,4 +149,11 @@ func main() {
 		logger.Error("server exited", "error", err)
 		os.Exit(1)
 	}
+}
+
+func envOrDefault(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
 }

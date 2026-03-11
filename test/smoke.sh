@@ -8,6 +8,7 @@ TMPDIR="$(mktemp -d)"
 MANAGER_PORT_FILE="$TMPDIR/manager-port"
 MANAGER_NAMESPACE="acme"
 RUNTIME_MODE="${SMOKE_RUNTIME_MODE:-process}"
+SHELLEY_UI_MODE="${SMOKE_SHELLEY_UI_MODE:-same_host_port}"
 WORKSPACE_NAME="bp-ig-fix"
 TOPIC_NAME="bp-example-validator"
 TEMPLATE_NAME="acme-rpm-ig"
@@ -162,6 +163,7 @@ log "Starting shelleymanager in predictable $RUNTIME_MODE-launch mode"
     -port-file "$MANAGER_PORT_FILE" \
     -state-dir "$TMPDIR/manager-state" \
     -namespace "$MANAGER_NAMESPACE" \
+    -shelley-ui-mode "$SHELLEY_UI_MODE" \
     -runtime-mode "$RUNTIME_MODE" \
     -shelley-binary "$TMPDIR/shelley" \
     -tools-dir "$LOCAL_TOOLS_DIR" \

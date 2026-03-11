@@ -65,9 +65,14 @@ func (m *Manager) handleShelleyUIRedirect(w http.ResponseWriter, r *http.Request
 		http.NotFound(w, r)
 		return
 	}
-	target := strings.TrimRight(ws.Runtime.APIBase.String(), "/")
+	topic := ""
 	if len(parts) == 3 {
-		target += "/c/" + parts[2]
+		topic = parts[2]
+	}
+	target := m.specShelleyURL(r, ws, topic)
+	if target == "" {
+		http.NotFound(w, r)
+		return
 	}
 	http.Redirect(w, r, target, http.StatusFound)
 }
