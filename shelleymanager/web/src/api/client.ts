@@ -2,6 +2,7 @@ import type {
   LocalTool,
   WorkspaceSummary,
   WorkspaceDetail,
+  WorkspaceFileListing,
   CreateWorkspaceRequest,
   PatchWorkspaceRequest,
   QueueSnapshot,
@@ -12,10 +13,10 @@ import { authorizationHeader } from "./auth";
 
 const BASE = "";
 
-async function request<T>(
+async function requestResponse(
   url: string,
   init?: RequestInit,
-): Promise<T> {
+): Promise<Response> {
   const headers: Record<string, string> = {};
   if (init?.body && typeof init.body === "string") {
     headers["Content-Type"] = "application/json";
@@ -28,6 +29,14 @@ async function request<T>(
     const text = await res.text();
     throw new Error(`${res.status} ${text.trim() || res.statusText}`);
   }
+  return res;
+}
+
+async function request<T>(
+  url: string,
+  init?: RequestInit,
+): Promise<T> {
+  const res = await requestResponse(url, init);
   const text = await res.text();
   if (!text) return {} as T;
   return JSON.parse(text) as T;
@@ -39,6 +48,11 @@ function namespacedBase(namespace: string): string {
 
 function workspaceBase(namespace: string, workspace: string): string {
   return `${namespacedBase(namespace)}/${encodeURIComponent(workspace)}`;
+}
+
+function fileQuery(path?: string): string {
+  if (!path) return "";
+  return `?path=${encodeURIComponent(path)}`;
 }
 
 // --- Local tools ---
@@ -88,6 +102,43 @@ export async function deleteWorkspace(
   name: string,
 ): Promise<void> {
   await request<unknown>(workspaceBase(namespace, name), { method: "DELETE" });
+}
+
+// --- Workspace files ---
+
+export async function fetchWorkspaceFiles(
+  namespace: string,
+  workspace: string,
+  path = "",
+): Promise<WorkspaceFileListing> {
+  return request<WorkspaceFileListing>(
+    `${workspaceBase(namespace, workspace)}/files${fileQuery(path)}`,
+  );
+}
+
+export async function readWorkspaceFileContent(
+  namespace: string,
+  workspace: string,
+  path: string,
+): Promise<Response> {
+  return requestResponse(
+    `${workspaceBase(namespace, workspace)}/files/content${fileQuery(path)}`,
+  );
+}
+
+export async function uploadWorkspaceFile(
+  namespace: string,
+  workspace: string,
+  path: string,
+  body: File,
+): Promise<WorkspaceFileListing> {
+  return request<WorkspaceFileListing>(
+    `${workspaceBase(namespace, workspace)}/files/content${fileQuery(path)}`,
+    {
+      method: "PUT",
+      body,
+    },
+  );
 }
 
 // --- Topics ---

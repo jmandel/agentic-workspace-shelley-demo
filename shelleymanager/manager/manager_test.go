@@ -106,7 +106,7 @@ func TestManagerCreateAndProxyRoutes(t *testing.T) {
 
 	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
-		seenPaths = append(seenPaths, r.Method+" "+r.URL.Path)
+		seenPaths = append(seenPaths, r.Method+" "+r.URL.RequestURI())
 		mu.Unlock()
 		switch {
 		case r.URL.Path == "/ws/health":
@@ -119,7 +119,10 @@ func TestManagerCreateAndProxyRoutes(t *testing.T) {
 		case r.URL.Path == "/ws/topics":
 			w.Header().Set("Content-Type", "application/json")
 			io.WriteString(w, `[{"name":"general","clients":0,"busy":false,"createdAt":"2026-03-10T00:00:00Z"}]`)
-		case strings.HasPrefix(r.URL.Path, "/ws/files/"):
+		case r.URL.Path == "/ws/files" && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"node":{"path":"docs","name":"docs","kind":"directory","size":0,"modifiedAt":"2026-03-10T00:00:00Z"},"entries":[]}`)
+		case r.URL.Path == "/ws/files/content" && r.Method == http.MethodGet:
 			io.WriteString(w, "proxied-file")
 		default:
 			http.NotFound(w, r)
@@ -188,7 +191,22 @@ func TestManagerCreateAndProxyRoutes(t *testing.T) {
 		t.Fatalf("expected proxied topics response, got %s", body)
 	}
 
-	fileReq, err := http.NewRequest(http.MethodGet, server.URL+"/apis/v1/namespaces/acme/workspaces/demo/files/readme.txt", nil)
+	filesReq, err := http.NewRequest(http.MethodGet, server.URL+"/apis/v1/namespaces/acme/workspaces/demo/files?path=docs", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setManagerAuth(t, filesReq, "alice@example.com")
+	filesRes, err := http.DefaultClient.Do(filesReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer filesRes.Body.Close()
+	filesBody, _ := io.ReadAll(filesRes.Body)
+	if !strings.Contains(string(filesBody), `"path":"docs"`) {
+		t.Fatalf("unexpected proxied files body %q", filesBody)
+	}
+
+	fileReq, err := http.NewRequest(http.MethodGet, server.URL+"/apis/v1/namespaces/acme/workspaces/demo/files/content?path=readme.txt", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +242,8 @@ func TestManagerCreateAndProxyRoutes(t *testing.T) {
 		"POST /ws/topics",
 		"GET /ws/topics",
 		"DELETE /ws/topics/general",
-		"GET /ws/files/readme.txt",
+		"GET /ws/files?path=docs",
+		"GET /ws/files/content?path=readme.txt",
 	} {
 		if !strings.Contains(got, expected) {
 			t.Fatalf("expected runtime to see %q, got:\n%s", expected, got)

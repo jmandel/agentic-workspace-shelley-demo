@@ -3,6 +3,7 @@ import { Link, useParams, useLocation } from "wouter";
 import { useStore } from "@/store";
 import { AboutLink } from "@/components/AboutLink";
 import { ParticipantNameInput } from "@/components/ParticipantNameInput";
+import { WorkspaceFileBrowser } from "@/components/WorkspaceFileBrowser";
 import type { WorkspaceDetail } from "@/api/types";
 import * as api from "@/api/client";
 import { registerDemoJiraTool } from "@/api/demo-tools";
@@ -220,6 +221,15 @@ export function WorkspacePage() {
             </button>
           </div>
         </section>
+      </div>
+
+      <div style={{ marginTop: 16 }}>
+        <WorkspaceFileBrowser
+          namespace={namespace}
+          workspace={workspace}
+          browserId={`workspace-page:${namespace}:${workspace}`}
+          title="Workspace Files"
+        />
       </div>
     </div>
   );

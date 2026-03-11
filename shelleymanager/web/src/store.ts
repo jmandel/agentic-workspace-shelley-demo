@@ -2,6 +2,8 @@ import { create } from "zustand";
 import type {
   LocalTool,
   WorkspaceDetail,
+  WorkspaceFileListing,
+  WorkspaceFileNode,
   QueueSnapshot,
   QueueEntry,
   TopicMessage,
@@ -10,6 +12,11 @@ import type {
 import * as api from "@/api/client";
 import { loadClientIdentity, updateClientDisplayName } from "@/api/auth";
 import { connectAuthenticatedSocket } from "@/api/socket";
+import type { WorkspaceFilePreviewKind } from "@/components/workspaceFileBrowserModel";
+import {
+  joinWorkspacePath,
+  previewKindForFile,
+} from "@/components/workspaceFileBrowserModel";
 
 const EVENTS_RECONNECT_DELAY_MS = 3000;
 const TOPIC_RECONNECT_DELAY_MS = 1500;
@@ -40,6 +47,23 @@ export type ConnectionStatus =
   | "connecting"
   | "connected"
   | "disconnected";
+
+export interface WorkspaceFileBrowserState {
+  namespace: string;
+  workspace: string;
+  currentPath: string;
+  listing: WorkspaceFileListing | null;
+  loading: boolean;
+  error: string;
+  selectedFilePath: string;
+  previewKind: WorkspaceFilePreviewKind | null;
+  previewText: string;
+  previewMimeType: string;
+  previewLoading: boolean;
+  previewError: string;
+  uploadBusy: boolean;
+  uploadError: string;
+}
 
 // ---------------------------------------------------------------------------
 // Store shape
@@ -74,6 +98,19 @@ interface AppState {
   deleteWorkspace: (name: string) => Promise<void>;
   deleteTopic: (workspace: string, topic: string) => Promise<void>;
   createTopic: (workspace: string, topic: string) => Promise<void>;
+
+  // --- Workspace file browsers ---
+  fileBrowsers: Record<string, WorkspaceFileBrowserState>;
+  ensureWorkspaceFileBrowser: (
+    browserId: string,
+    namespace: string,
+    workspace: string,
+    initialPath?: string,
+  ) => Promise<void>;
+  browseWorkspaceDirectory: (browserId: string, path: string) => Promise<void>;
+  previewWorkspaceFile: (browserId: string, node: WorkspaceFileNode) => Promise<void>;
+  refreshWorkspaceFileBrowser: (browserId: string) => Promise<void>;
+  uploadWorkspaceFiles: (browserId: string, files: File[]) => Promise<void>;
 
   // --- Manager events (RFC 0009) ---
   _eventsWs: WebSocket | null;
@@ -116,6 +153,43 @@ const initialIdentity = loadClientIdentity();
 // ---------------------------------------------------------------------------
 
 const EMPTY_QUEUE: QueueSnapshot = { activePromptId: "", entries: [] };
+
+function emptyWorkspaceFileBrowser(
+  namespace: string,
+  workspace: string,
+  currentPath = "",
+): WorkspaceFileBrowserState {
+  return {
+    namespace,
+    workspace,
+    currentPath,
+    listing: null,
+    loading: false,
+    error: "",
+    selectedFilePath: "",
+    previewKind: null,
+    previewText: "",
+    previewMimeType: "",
+    previewLoading: false,
+    previewError: "",
+    uploadBusy: false,
+    uploadError: "",
+  };
+}
+
+function updateWorkspaceFileBrowserMap(
+  fileBrowsers: Record<string, WorkspaceFileBrowserState>,
+  browserId: string,
+  updater: (browser: WorkspaceFileBrowserState) => WorkspaceFileBrowserState,
+  fallback?: WorkspaceFileBrowserState,
+): Record<string, WorkspaceFileBrowserState> {
+  const current = fileBrowsers[browserId] ?? fallback;
+  if (!current) return fileBrowsers;
+  return {
+    ...fileBrowsers,
+    [browserId]: updater(current),
+  };
+}
 
 function normalizeQueue(
   raw: Partial<QueueSnapshot> | undefined,
@@ -271,6 +345,336 @@ export const useStore = create<AppState>((set, get) => ({
     await api.createTopic(namespace, workspace, topic);
     // Refresh the workspace detail to get updated topics list
     await get().fetchWorkspaceDetail(workspace);
+  },
+
+  // --- Workspace file browsers ---
+  fileBrowsers: {},
+  ensureWorkspaceFileBrowser: async (
+    browserId: string,
+    namespace: string,
+    workspace: string,
+    initialPath = "",
+  ) => {
+    const existing = get().fileBrowsers[browserId];
+    const sameWorkspace =
+      existing?.namespace === namespace && existing?.workspace === workspace;
+    if (
+      sameWorkspace &&
+      existing?.listing &&
+      existing.currentPath === initialPath
+    ) {
+      return;
+    }
+
+    set((state) => ({
+      fileBrowsers: {
+        ...state.fileBrowsers,
+        [browserId]:
+          sameWorkspace && existing
+            ? {
+                ...existing,
+                currentPath: initialPath,
+                error: "",
+              }
+            : emptyWorkspaceFileBrowser(namespace, workspace, initialPath),
+      },
+    }));
+    await get().refreshWorkspaceFileBrowser(browserId);
+  },
+  browseWorkspaceDirectory: async (browserId: string, path: string) => {
+    const browser = get().fileBrowsers[browserId];
+    if (!browser) return;
+    const requestPath = path;
+
+    set((state) => ({
+      fileBrowsers: updateWorkspaceFileBrowserMap(
+        state.fileBrowsers,
+        browserId,
+        () => ({
+          ...browser,
+          currentPath: path,
+          loading: true,
+          error: "",
+          selectedFilePath: "",
+          previewKind: null,
+          previewText: "",
+          previewMimeType: "",
+          previewLoading: false,
+          previewError: "",
+        }),
+        browser,
+      ),
+    }));
+
+    try {
+      const listing = await api.fetchWorkspaceFiles(
+        browser.namespace,
+        browser.workspace,
+        requestPath,
+      );
+      const current = get().fileBrowsers[browserId];
+      if (
+        !current ||
+        current.namespace !== browser.namespace ||
+        current.workspace !== browser.workspace ||
+        current.currentPath !== requestPath
+      ) {
+        return;
+      }
+      set((state) => ({
+        fileBrowsers: updateWorkspaceFileBrowserMap(
+          state.fileBrowsers,
+          browserId,
+          (current) => ({
+            ...current,
+            listing,
+            loading: false,
+            error: "",
+          }),
+          browser,
+        ),
+      }));
+    } catch (err) {
+      set((state) => ({
+        fileBrowsers: updateWorkspaceFileBrowserMap(
+          state.fileBrowsers,
+          browserId,
+          (current) => ({
+            ...current,
+            listing: null,
+            loading: false,
+            error: err instanceof Error ? err.message : String(err),
+          }),
+          browser,
+        ),
+      }));
+    }
+  },
+  previewWorkspaceFile: async (browserId: string, node: WorkspaceFileNode) => {
+    const browser = get().fileBrowsers[browserId];
+    if (!browser) return;
+
+    const previewKind = previewKindForFile(node);
+    set((state) => ({
+      fileBrowsers: updateWorkspaceFileBrowserMap(
+        state.fileBrowsers,
+        browserId,
+        (current) => ({
+          ...current,
+          selectedFilePath: node.path,
+          previewKind,
+          previewText: "",
+          previewMimeType: node.mimeType ?? "",
+          previewLoading: previewKind === "text",
+          previewError: "",
+        }),
+        browser,
+      ),
+    }));
+
+    if (previewKind !== "text") {
+      return;
+    }
+
+    try {
+      const response = await api.readWorkspaceFileContent(
+        browser.namespace,
+        browser.workspace,
+        node.path,
+      );
+      const text = await response.text();
+      const current = get().fileBrowsers[browserId];
+      if (
+        !current ||
+        current.namespace !== browser.namespace ||
+        current.workspace !== browser.workspace ||
+        current.selectedFilePath !== node.path
+      ) {
+        return;
+      }
+      set((state) => ({
+        fileBrowsers: updateWorkspaceFileBrowserMap(
+          state.fileBrowsers,
+          browserId,
+          (current) => ({
+            ...current,
+            previewKind: "text",
+            previewText: text,
+            previewMimeType:
+              response.headers.get("Content-Type") ?? node.mimeType ?? "",
+            previewLoading: false,
+            previewError: "",
+          }),
+          browser,
+        ),
+      }));
+    } catch (err) {
+      const current = get().fileBrowsers[browserId];
+      if (
+        !current ||
+        current.namespace !== browser.namespace ||
+        current.workspace !== browser.workspace ||
+        current.selectedFilePath !== node.path
+      ) {
+        return;
+      }
+      set((state) => ({
+        fileBrowsers: updateWorkspaceFileBrowserMap(
+          state.fileBrowsers,
+          browserId,
+          (current) => ({
+            ...current,
+            previewLoading: false,
+            previewError: err instanceof Error ? err.message : String(err),
+          }),
+          browser,
+        ),
+      }));
+    }
+  },
+  refreshWorkspaceFileBrowser: async (browserId: string) => {
+    const browser = get().fileBrowsers[browserId];
+    if (!browser) return;
+    const requestPath = browser.currentPath;
+
+    set((state) => ({
+      fileBrowsers: updateWorkspaceFileBrowserMap(
+        state.fileBrowsers,
+        browserId,
+        (current) => ({
+          ...current,
+          loading: true,
+          error: "",
+        }),
+        browser,
+      ),
+    }));
+
+    try {
+      const listing = await api.fetchWorkspaceFiles(
+        browser.namespace,
+        browser.workspace,
+        requestPath,
+      );
+      const current = get().fileBrowsers[browserId];
+      if (
+        !current ||
+        current.namespace !== browser.namespace ||
+        current.workspace !== browser.workspace ||
+        current.currentPath !== requestPath
+      ) {
+        return;
+      }
+      set((state) => ({
+        fileBrowsers: updateWorkspaceFileBrowserMap(
+          state.fileBrowsers,
+          browserId,
+          (current) => ({
+            ...current,
+            listing,
+            loading: false,
+            error: "",
+          }),
+          browser,
+        ),
+      }));
+
+      const refreshed = get().fileBrowsers[browserId];
+      if (!refreshed?.selectedFilePath) {
+        return;
+      }
+      const selectedNode = listing.entries?.find(
+        (entry) => entry.path === refreshed.selectedFilePath,
+      );
+      if (selectedNode?.kind === "file") {
+        await get().previewWorkspaceFile(browserId, selectedNode);
+        return;
+      }
+      set((state) => ({
+        fileBrowsers: updateWorkspaceFileBrowserMap(
+          state.fileBrowsers,
+          browserId,
+          (current) => ({
+            ...current,
+            selectedFilePath: "",
+            previewKind: null,
+            previewText: "",
+            previewMimeType: "",
+            previewLoading: false,
+            previewError: "",
+          }),
+          browser,
+        ),
+      }));
+    } catch (err) {
+      set((state) => ({
+        fileBrowsers: updateWorkspaceFileBrowserMap(
+          state.fileBrowsers,
+          browserId,
+          (current) => ({
+            ...current,
+            listing: null,
+            loading: false,
+            error: err instanceof Error ? err.message : String(err),
+          }),
+          browser,
+        ),
+      }));
+    }
+  },
+  uploadWorkspaceFiles: async (browserId: string, files: File[]) => {
+    const browser = get().fileBrowsers[browserId];
+    if (!browser || files.length === 0) return;
+
+    set((state) => ({
+      fileBrowsers: updateWorkspaceFileBrowserMap(
+        state.fileBrowsers,
+        browserId,
+        (current) => ({
+          ...current,
+          uploadBusy: true,
+          uploadError: "",
+        }),
+        browser,
+      ),
+    }));
+
+    try {
+      for (const file of files) {
+        await api.uploadWorkspaceFile(
+          browser.namespace,
+          browser.workspace,
+          joinWorkspacePath(browser.currentPath, file.name),
+          file,
+        );
+      }
+      set((state) => ({
+        fileBrowsers: updateWorkspaceFileBrowserMap(
+          state.fileBrowsers,
+          browserId,
+          (current) => ({
+            ...current,
+            uploadBusy: false,
+            uploadError: "",
+          }),
+          browser,
+        ),
+      }));
+      await get().refreshWorkspaceFileBrowser(browserId);
+    } catch (err) {
+      set((state) => ({
+        fileBrowsers: updateWorkspaceFileBrowserMap(
+          state.fileBrowsers,
+          browserId,
+          (current) => ({
+            ...current,
+            uploadBusy: false,
+            uploadError: err instanceof Error ? err.message : String(err),
+          }),
+          browser,
+        ),
+      }));
+    }
   },
 
   // --- Manager events (RFC 0009) ---

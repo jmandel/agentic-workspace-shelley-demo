@@ -42,6 +42,20 @@ export interface WorkspaceDetail extends WorkspaceSummary {
   runtime?: WorkspaceRuntimeInfo;
 }
 
+export interface WorkspaceFileNode {
+  path: string;
+  name: string;
+  kind: "file" | "directory";
+  size: number;
+  modifiedAt: string;
+  mimeType?: string;
+}
+
+export interface WorkspaceFileListing {
+  node: WorkspaceFileNode;
+  entries?: WorkspaceFileNode[];
+}
+
 export interface CreateWorkspaceRequest {
   name: string;
   template?: string;

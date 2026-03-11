@@ -254,17 +254,18 @@ OBS_CONTENT="$(cat "$WORKSPACE_ROOT/input/examples/Observation-bp-alice-morning.
 require_output "$OBS_CONTENT" '"effectiveDateTime": "2026-02-30T07:00:00Z"' "workspace creation seeds the broken observation example"
 
 log "Checking manager-proxied workspace file endpoints"
-curl -sf -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" --data-binary 'workspace file body' "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/files/$FILE_PATH" >/dev/null
-FILE_BODY="$(curl -sf -H "Authorization: Bearer $ADMIN_TOKEN" "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/files/$FILE_PATH")"
-require_output "$FILE_BODY" "workspace file body" "proxied GET /files/{path} reads file content"
+curl -sf -X POST -H "Authorization: Bearer $ADMIN_TOKEN" "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/files/directories?path=$FILE_DIR" >/dev/null
+curl -sf -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" --data-binary 'workspace file body' "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/files/content?path=$FILE_PATH" >/dev/null
+FILE_BODY="$(curl -sf -H "Authorization: Bearer $ADMIN_TOKEN" "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/files/content?path=$FILE_PATH")"
+require_output "$FILE_BODY" "workspace file body" "proxied GET /files/content reads file content"
 HOST_FILE_BODY="$(cat "$WORKSPACE_ROOT/$FILE_PATH")"
 require_output "$HOST_FILE_BODY" "workspace file body" "managed Shelley runtime roots file writes in its workspace directory"
 
-DIR_JSON="$(curl -sf -H "Authorization: Bearer $ADMIN_TOKEN" "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/files/$FILE_DIR")"
-require_output "$DIR_JSON" "$FILE_PATH" "proxied GET /files/{path} lists directories"
+DIR_JSON="$(curl -sf -H "Authorization: Bearer $ADMIN_TOKEN" "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/files?path=$FILE_DIR")"
+require_output "$DIR_JSON" "\"path\":\"$FILE_PATH\"" "proxied GET /files lists directories"
 
-curl -sf -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/files/$FILE_PATH" >/dev/null
-curl -sf -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/files/$FILE_DIR" >/dev/null
+curl -sf -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/files?path=$FILE_PATH" >/dev/null
+curl -sf -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/files?path=$FILE_DIR" >/dev/null
 
 log "Checking manager-proxied workspace tool endpoints"
 TOOL_JSON="$(curl -sf -X POST "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/tools" \
