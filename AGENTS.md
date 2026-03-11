@@ -160,3 +160,15 @@ The two subdirectories above are independent git repositories, not submodules.
 - Start by re-reading the current code entrypoints above.
 - Use the cloned repos, not GitHub pages, unless a newer upstream revision is intentionally required.
 - If editing Shelley UI or tool rendering, also read [`shelley/ui/src/components/AGENTS.md`](/home/jmandel/hobby/workspace-protocol/shelley/ui/src/components/AGENTS.md).
+
+## VM Setup Notes
+- This exe.dev VM did not initially have the JS/browser/runtime dependencies needed by this repo.
+- Installed during setup:
+  - `bun` for `shelleymanager/web` builds
+  - Java 21 (`openjdk-21-jre-headless`) for the `fhir-validator` local tool; Java 17+ is required
+  - Node.js/npm so `npx` is available in the VM
+  - `bubblewrap` for `shelleymanager` `bwrap` runtime mode
+  - Google Chrome (`google-chrome`) for Shelley browser tools
+- Ubuntu's `chromium-browser` package in this VM is only a snap shim and is not a usable browser here.
+- `snapd` can start, but this VM does not fully support snap packages because squashfs mounting is unavailable, so prefer non-snap packages.
+- `bun` was installed under `~/.bun/bin` and also copied to `/usr/local/bin/bun` so sandboxed `bwrap` runtimes can resolve it via mounted system paths.
