@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ChatMessage } from "@/store";
 
 const KIND_CLASS: Record<string, string> = {
@@ -7,16 +7,38 @@ const KIND_CLASS: Record<string, string> = {
   assistant: "",
   error: "msg-error",
   tool: "msg-tool",
-  injected: "msg-injected",
   interrupted: "msg-interrupted",
 };
+
+const COLLAPSE_LINE_THRESHOLD = 4;
+
+function MessageBody({ msg }: { msg: ChatMessage }) {
+  const [expanded, setExpanded] = useState(false);
+  const collapsible =
+    msg.kind === "tool" && msg.body.split("\n").length > COLLAPSE_LINE_THRESHOLD;
+
+  return (
+    <>
+      <div className={`msg-body ${collapsible && !expanded ? "msg-body-clamped" : ""}`}>
+        {msg.body}
+      </div>
+      {collapsible && (
+        <button
+          className="msg-toggle"
+          onClick={() => setExpanded((v) => !v)}
+        >
+          {expanded ? "Show less" : "Show more"}
+        </button>
+      )}
+    </>
+  );
+}
 
 export function MessageList({ messages }: { messages: ChatMessage[] }) {
   const endRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef(0);
 
   useEffect(() => {
-    // Coalesce rapid updates (e.g. history replay) into a single scroll
     cancelAnimationFrame(rafRef.current);
     rafRef.current = requestAnimationFrame(() => {
       endRef.current?.scrollIntoView();
@@ -36,10 +58,9 @@ export function MessageList({ messages }: { messages: ChatMessage[] }) {
       {messages.map((msg) => (
         <div key={msg.id} className={`msg ${KIND_CLASS[msg.kind] ?? ""}`}>
           <div className="msg-label">
-            {msg.kind === "injected" && "Injected \u00b7 "}
             {msg.label}
           </div>
-          <div className="msg-body">{msg.body}</div>
+          <MessageBody msg={msg} />
         </div>
       ))}
       <div ref={endRef} />

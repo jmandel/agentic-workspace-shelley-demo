@@ -101,6 +101,14 @@ log "Building Shelley binary"
   go build -o "$TMPDIR/shelley" ./cmd/shelley
 )
 
+log "Building shelleymanager web UI"
+(
+  cd "$ROOT_DIR/shelleymanager/web"
+  bun install
+  bun run build
+  bun test
+)
+
 log "Building shelleymanager binary"
 (
   cd "$ROOT_DIR/shelleymanager"
@@ -174,28 +182,33 @@ require_output "$DETAIL_JSON" '"localTools":[{"name":"fhir-validator"' "GET work
 require_output "$DETAIL_JSON" '"name":"hl7-jira-support"' "GET workspace detail includes the selected Jira support bundle"
 
 HOME_HTML="$(curl -sf "http://localhost:$PORT/")"
-require_output "$HOME_HTML" "Create Workspace" "GET / serves the manager web entry point"
-require_output "$HOME_HTML" "Participant Name" "GET / exposes participant naming controls"
-require_output "$HOME_HTML" "/ws-language" "GET / links to the ws language tutorial"
+require_output "$HOME_HTML" '<div id="root"></div>' "GET / serves the embedded manager SPA shell"
+require_output "$HOME_HTML" '/assets/' "GET / includes built web assets"
 
 WS_LANGUAGE_HTML="$(curl -sf "http://localhost:$PORT/ws-language")"
-require_output "$WS_LANGUAGE_HTML" "WS Language Tutorial" "GET /ws-language serves the predictable-model tutorial"
-require_output "$WS_LANGUAGE_HTML" "Queueing Trick" "GET /ws-language explains how to demonstrate queueing"
+require_output "$WS_LANGUAGE_HTML" '<div id="root"></div>' "GET /ws-language serves the embedded SPA shell"
+require_output "$WS_LANGUAGE_HTML" '/assets/' "GET /ws-language includes built web assets"
 
 APP_HTML="$(curl -sf "http://localhost:$PORT/app/$MANAGER_NAMESPACE/$WORKSPACE_NAME/$TOPIC_NAME")"
-require_output "$APP_HTML" "Send Prompt" "GET /app/{ns}/{workspace}/{topic} serves the topic web UI"
-require_output "$APP_HTML" "Use Name" "GET /app/{ns}/{workspace}/{topic} exposes participant naming controls"
+require_output "$APP_HTML" '<div id="root"></div>' "GET /app/{ns}/{workspace}/{topic} serves the embedded SPA shell"
+require_output "$APP_HTML" '/assets/' "GET /app/{ns}/{workspace}/{topic} includes built web assets"
 
 if command -v chromium >/dev/null 2>&1; then
   HOME_DOM="$(chromium --headless --disable-gpu --virtual-time-budget=4000 --dump-dom "http://localhost:$PORT/" 2>/dev/null)"
+  require_output "$HOME_DOM" "Create Workspace" "headless Chromium renders the create workspace UI"
+  require_output "$HOME_DOM" "Current participant:" "headless Chromium renders participant naming controls"
+  require_output "$HOME_DOM" "WS Language" "headless Chromium renders the ws language link"
   require_output "$HOME_DOM" "Delete Workspace" "headless Chromium renders a per-workspace card with workspace deletion"
   require_output "$HOME_DOM" "Create Topic" "headless Chromium renders a dedicated topic-creation control"
-  require_output "$HOME_DOM" "Open Shelley UI" "headless Chromium renders topic-level Shelley UI links"
+  require_output "$HOME_DOM" "Shelley UI" "headless Chromium renders topic-level Shelley UI links"
   require_output "$HOME_DOM" "Current participant:" "headless Chromium renders the saved participant name"
+  WS_LANGUAGE_DOM="$(chromium --headless --disable-gpu --virtual-time-budget=4000 --dump-dom "http://localhost:$PORT/ws-language" 2>/dev/null)"
+  require_output "$WS_LANGUAGE_DOM" "WS Language Tutorial" "headless Chromium renders the predictable-model tutorial"
+  require_output "$WS_LANGUAGE_DOM" "Queueing Trick" "headless Chromium renders the queueing tutorial"
   APP_DOM="$(chromium --headless --disable-gpu --virtual-time-budget=4000 --dump-dom "http://localhost:$PORT/app/$MANAGER_NAMESPACE/$WORKSPACE_NAME/$TOPIC_NAME" 2>/dev/null)"
-  require_output "$APP_DOM" '<span id="status" class="meta">Connected</span>' "headless Chromium connects to the topic web UI websocket"
-  require_output "$APP_DOM" '<div class="meta">Connected</div>' "topic web UI renders the initial connected event in a browser"
-  require_output "$APP_DOM" "Participant Name" "topic web UI renders participant naming controls in the browser"
+  require_output "$APP_DOM" "WS Reference" "topic web UI renders the tutorial link in the browser"
+  require_output "$APP_DOM" "Open in Shelley" "topic web UI renders the Shelley UI link in the browser"
+  require_output "$APP_DOM" "Send" "topic web UI renders the prompt composer in the browser"
 fi
 
 PATIENT_CONTENT="$(cat "$WORKSPACE_ROOT/input/examples/Patient-bp-alice-smith.json")"
@@ -222,7 +235,7 @@ TOOL_JSON="$(curl -sf -X POST "http://localhost:$PORT/apis/v1/namespaces/$MANAGE
   -d @- <<JSON
 {
   "name": "hl7-jira",
-  "description": "Search the real HL7 Jira snapshot",
+  "description": "Search and inspect issues from the real HL7 Jira SQLite snapshot",
   "provider": "demo@acme.example",
   "protocol": "mcp",
   "transport": {
@@ -233,33 +246,18 @@ TOOL_JSON="$(curl -sf -X POST "http://localhost:$PORT/apis/v1/namespaces/$MANAGE
     "env": {
       "HL7_JIRA_DB": "/tools/hl7-jira-support/data/jira-data.db"
     }
-  },
-  "tools": [
-    {
-      "name": "jira.search",
-      "title": "Search HL7 Jira",
-      "description": "Search the real HL7 Jira SQLite snapshot for validator and FHIRPath issues",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "query": { "type": "string" },
-          "limit": { "type": "integer", "minimum": 1, "maximum": 10 }
-        },
-        "required": ["query"],
-        "additionalProperties": false
-      }
-    }
-  ]
+  }
 }
 JSON
 )"
 require_output "$TOOL_JSON" '"name":"hl7-jira"' "proxied POST /tools creates the Jira MCP tool"
 require_output "$TOOL_JSON" '"/tools/hl7-jira-support/bin/hl7-jira-mcp.js"' "workspace tool response preserves the public stdio transport"
+require_output "$TOOL_JSON" '"redacted":true' "workspace tool response redacts sensitive transport values on read"
 
 GRANT_JSON="$(curl -sf -X POST "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/tools/hl7-jira/grants" \
   -H 'Content-Type: application/json' \
-  -d '{"subject":"agent:*","tools":["jira.search"],"access":"allowed"}')"
-require_output "$GRANT_JSON" '"jira.search"' "proxied POST /tools/{tool}/grants accepts RFC-shaped tool grants"
+  -d '{"subject":"agent:*","tools":["*"],"access":"allowed"}')"
+require_output "$GRANT_JSON" '"*"' "proxied POST /tools/{tool}/grants accepts wildcard tool grants"
 
 TOOLS_JSON="$(curl -sf "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/tools")"
 require_output "$TOOLS_JSON" '"hl7-jira"' "proxied GET /tools lists the Jira MCP tool"
@@ -297,6 +295,9 @@ log "Running real Bun CLI against shelleymanager"
   printf '%s\n' 'workspace_tool_json: hl7-jira jira.search {"query":"validation error handling"}' >&3
   read_cli_until "FHIR-20482" "cli.ts received the Jira MCP search result"
   read_cli_until "FHIR-31991" "cli.ts received multiple realistic Jira hits"
+  printf '%s\n' 'workspace_tool_json: hl7-jira jira.read {"key":"FHIR-20482"}' >&3
+  read_cli_until "FHIRPath conformsTo Validation of Warnings/Error handling pull request" "cli.ts received the Jira issue detail output"
+  read_cli_until "\"key\": \"FHIR-20482\"" "cli.ts received the full Jira issue JSON"
 
   if [[ "$RUNTIME_MODE" == "bwrap" ]]; then
     printf 'bash: touch bwrap-inside.txt && touch /tmp/%s && echo bwrap-ok\n' "$BWRAP_TMP_NAME" >&3

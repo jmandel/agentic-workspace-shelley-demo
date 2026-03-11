@@ -1,7 +1,13 @@
 import { useState } from "react";
 import { useStore } from "@/store";
 
-export function ParticipantNameInput({ compact }: { compact?: boolean }) {
+export function ParticipantNameInput({
+  compact,
+  showLabel = true,
+}: {
+  compact?: boolean;
+  showLabel?: boolean;
+}) {
   const name = useStore((s) => s.participantName);
   const setName = useStore((s) => s.setParticipantName);
   const [editing, setEditing] = useState(false);
@@ -21,6 +27,11 @@ export function ParticipantNameInput({ compact }: { compact?: boolean }) {
     if (!editing) {
       return (
         <div className="row" style={{ gap: 6 }}>
+          {showLabel && (
+            <span className="muted" style={{ fontSize: 13 }}>
+              Current participant:
+            </span>
+          )}
           <span style={{ fontSize: 13 }}>{name}</span>
           <button
             className="btn btn-secondary btn-sm"
@@ -33,6 +44,11 @@ export function ParticipantNameInput({ compact }: { compact?: boolean }) {
     }
     return (
       <div className="row" style={{ gap: 6 }}>
+        {showLabel && (
+          <span className="muted" style={{ fontSize: 13 }}>
+            Current participant:
+          </span>
+        )}
         <input
           type="text"
           className="input-inline"

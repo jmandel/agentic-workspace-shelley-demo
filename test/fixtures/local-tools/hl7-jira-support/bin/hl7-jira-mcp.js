@@ -81,6 +81,19 @@ function searchIssues(db, query, limit) {
   return rows.map(parseIssueRow).filter(Boolean);
 }
 
+function readIssue(db, key) {
+  const row = db
+    .query(`
+      SELECT data
+      FROM issues
+      WHERE key = ?1
+      LIMIT 1
+    `)
+    .get(String(key || "").trim());
+  if (!row) return null;
+  return typeof row.data === "string" ? JSON.parse(row.data) : row.data;
+}
+
 function formatList(results) {
   if (results.length === 0) {
     return "No matching HL7 Jira issues found.";
@@ -102,8 +115,8 @@ function formatList(results) {
 async function main() {
   const db = getDb();
   const server = new McpServer({
-    name: "hl7-jira-search",
-    version: "0.2.0"
+    name: "hl7-jira",
+    version: "0.3.0"
   });
 
   server.tool(
@@ -126,6 +139,40 @@ async function main() {
           query,
           results
         }
+      };
+    }
+  );
+
+  server.tool(
+    "jira.read",
+    "Read the full stored JSON document for one HL7 Jira issue from the SQLite snapshot.",
+    {
+      key: z.string().min(1).describe("HL7 Jira issue key, for example FHIR-20482"),
+    },
+    async ({ key }) => {
+      const issue = readIssue(db, key);
+      if (!issue) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `No HL7 Jira issue found for key ${key}.`,
+            },
+          ],
+          structuredContent: {
+            key,
+            found: false,
+          },
+        };
+      }
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(issue, null, 2),
+          },
+        ],
+        structuredContent: issue,
       };
     }
   );

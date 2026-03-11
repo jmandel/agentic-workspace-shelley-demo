@@ -88,6 +88,10 @@ type workspaceCreateRequest struct {
 	Runtime  *workspaceRuntimeRequest `json:"runtime,omitempty"`
 }
 
+type workspacePatchRequest struct {
+	Runtime *workspaceRuntimeRequest `json:"runtime,omitempty"`
+}
+
 type workspaceRuntimeRequest struct {
 	LocalTools []string `json:"localTools,omitempty"`
 }
@@ -153,6 +157,8 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.handleWSLanguage(w, r)
 	case strings.HasPrefix(r.URL.Path, "/app/"):
 		m.handleApp(w, r)
+	case strings.HasPrefix(r.URL.Path, "/assets/"):
+		m.handleUIAsset(w, r)
 	case strings.HasPrefix(r.URL.Path, "/shelley/"):
 		m.handleShelleyUIRedirect(w, r)
 	case strings.HasPrefix(r.URL.Path, "/internal/"):
@@ -255,6 +261,8 @@ func (m *Manager) handleCompatWorkspace(w http.ResponseWriter, r *http.Request) 
 				return
 			}
 			m.writeCompatDetail(w, r, ws)
+		case http.MethodPatch:
+			m.updateWorkspace(w, r, m.defaultNamespace, name, true)
 		case http.MethodDelete:
 			m.deleteWorkspace(w, r, m.defaultNamespace, name)
 		default:
@@ -338,6 +346,8 @@ func (m *Manager) handleNamespaced(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			m.writeSpecDetail(w, r, ws)
+		case http.MethodPatch:
+			m.updateWorkspace(w, r, namespace, name, false)
 		case http.MethodDelete:
 			m.deleteWorkspace(w, r, namespace, name)
 		default:
@@ -570,6 +580,130 @@ func (m *Manager) deleteWorkspace(w http.ResponseWriter, r *http.Request, namesp
 		"name":   name,
 		"status": "deleted",
 	})
+}
+
+func (m *Manager) updateWorkspace(w http.ResponseWriter, r *http.Request, namespace, name string, compat bool) {
+	ws, ok := m.getWorkspace(namespace, name)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+
+	var req workspacePatchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+
+	currentNames := selectedLocalToolNames(ws.LocalTools)
+	nextNames := currentNames
+	if req.Runtime != nil && req.Runtime.LocalTools != nil {
+		nextNames = append([]string(nil), req.Runtime.LocalTools...)
+	}
+	localTools, err := ResolveLocalTools(m.localTools, nextNames)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if sameLocalToolSelection(ws.LocalTools, localTools) {
+		if compat {
+			m.writeCompatDetail(w, r, ws)
+			return
+		}
+		m.writeSpecDetail(w, r, ws)
+		return
+	}
+
+	spec, err := m.launcher.WorkspacePaths(namespace, name)
+	if err != nil {
+		m.logger.Error("failed to build workspace paths", "namespace", namespace, "name", name, "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if err := m.bindManagerProxyAccess(namespace, name, &spec); err != nil {
+		m.logger.Error("failed to prepare manager proxy access", "namespace", namespace, "name", name, "error", err)
+		http.Error(w, "failed to prepare workspace manager access", http.StatusInternalServerError)
+		return
+	}
+	spec.LocalTools = append([]LocalTool(nil), localTools...)
+	if err := writeWorkspaceLocalToolGuidance(spec.WorkspaceDir, localTools); err != nil {
+		m.logger.Error("failed to write workspace local tool guidance", "namespace", namespace, "name", name, "error", err)
+		http.Error(w, "failed to prepare workspace guidance", http.StatusInternalServerError)
+		return
+	}
+
+	previousRuntime := ws.Runtime
+	previousLocalTools := append([]LocalTool(nil), ws.LocalTools...)
+	if previousRuntime.Stop != nil {
+		if err := previousRuntime.Stop(r.Context()); err != nil {
+			m.logger.Error("failed to stop workspace runtime for patch", "namespace", namespace, "name", name, "error", err)
+			http.Error(w, "failed to stop workspace runtime", http.StatusBadGateway)
+			return
+		}
+	}
+
+	runtime, launchErr := m.launcher.Launch(r.Context(), spec)
+	if launchErr != nil {
+		m.logger.Error("failed to relaunch patched workspace runtime", "namespace", namespace, "name", name, "error", launchErr)
+		if rollbackErr := m.restoreWorkspaceRuntime(r.Context(), ws, previousLocalTools); rollbackErr != nil {
+			m.logger.Error("failed to restore workspace runtime after patch failure", "namespace", namespace, "name", name, "error", rollbackErr)
+		}
+		http.Error(w, "failed to relaunch workspace runtime", http.StatusBadGateway)
+		return
+	}
+
+	m.mu.Lock()
+	ws.LocalTools = append([]LocalTool(nil), localTools...)
+	ws.Runtime = *runtime
+	m.mu.Unlock()
+	if err := m.persistWorkspaceMetadata(ws); err != nil {
+		m.logger.Error("failed to persist patched workspace metadata", "namespace", namespace, "name", name, "error", err)
+	}
+
+	if compat {
+		m.writeCompatDetail(w, r, ws)
+		return
+	}
+	m.writeSpecDetail(w, r, ws)
+}
+
+func (m *Manager) restoreWorkspaceRuntime(ctx context.Context, ws *Workspace, localTools []LocalTool) error {
+	spec, err := m.launcher.WorkspacePaths(ws.Namespace, ws.Name)
+	if err != nil {
+		return err
+	}
+	if err := m.bindManagerProxyAccess(ws.Namespace, ws.Name, &spec); err != nil {
+		return err
+	}
+	spec.LocalTools = append([]LocalTool(nil), localTools...)
+	if err := writeWorkspaceLocalToolGuidance(spec.WorkspaceDir, localTools); err != nil {
+		return err
+	}
+	runtime, err := m.launcher.Launch(ctx, spec)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	ws.LocalTools = append([]LocalTool(nil), localTools...)
+	ws.Runtime = *runtime
+	m.mu.Unlock()
+	return nil
+}
+
+func selectedLocalToolNames(tools []LocalTool) []string {
+	if len(tools) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		names = append(names, tool.Name)
+	}
+	slices.Sort(names)
+	return names
+}
+
+func sameLocalToolSelection(left, right []LocalTool) bool {
+	return slices.Equal(selectedLocalToolNames(left), selectedLocalToolNames(right))
 }
 
 func (m *Manager) writeCompatList(w http.ResponseWriter, r *http.Request, namespace string) {

@@ -258,6 +258,52 @@ textarea {
   margin-top: 12px;
 }
 
+.workspace-list-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.workspace-card-shell {
+  padding: 14px;
+  background: var(--card-inset);
+}
+
+.workspace-card-body {
+  display: grid;
+  gap: 14px;
+}
+
+.workspace-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.workspace-card-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.workspace-card-section {
+  display: grid;
+  gap: 8px;
+}
+
+.workspace-card-section + .workspace-card-section {
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.workspace-card-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
 /* ---- Topic items ---- */
 
 .topic-row {
@@ -307,6 +353,28 @@ textarea {
   font-size: 13px;
   line-height: 1.5;
 }
+
+/* ---- Collapsible tool results ---- */
+
+.msg-body-clamped {
+  max-height: 4.5em;
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, #000 60%, transparent);
+  -webkit-mask-image: linear-gradient(to bottom, #000 60%, transparent);
+}
+
+.msg-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  margin-top: 2px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.msg-toggle:hover { text-decoration: underline; }
 
 /* ---- Injected / interrupted messages ---- */
 
@@ -404,11 +472,121 @@ input[type="checkbox"] {
   border-radius: var(--radius);
 }
 
+/* ---- Topic header ---- */
+
+.topic-header-body {
+  display: grid;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.topic-breadcrumbs {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.topic-breadcrumb-current {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--ink);
+  letter-spacing: -0.02em;
+}
+
+.topic-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  align-items: flex-start;
+}
+
+.topic-control-block {
+  display: grid;
+  gap: 6px;
+  min-width: 220px;
+}
+
+.topic-toolbar-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.topic-cli-details {
+  padding-top: 4px;
+}
+
+.topic-cli-details summary {
+  list-style: none;
+}
+
+.topic-cli-details summary::-webkit-details-marker {
+  display: none;
+}
+
 /* ---- Tool card (form checkboxes) ---- */
 
 .tool-card {
-  padding: 10px;
+  padding: 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--card);
+  display: grid;
+  gap: 6px;
+}
+
+.tool-card-choice {
+  margin: 0;
+}
+
+.tool-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.tool-card-input {
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.tool-card-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.tool-card-choice .tool-card-copy {
+  padding-left: 26px;
+}
+
+.tool-card-title {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.tool-card-description {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.tool-card-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tool-card-copy code {
+  white-space: nowrap;
+}
+
+.queue-active {
+  margin-bottom: 8px;
 }

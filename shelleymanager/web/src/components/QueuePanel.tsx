@@ -20,12 +20,19 @@ export function QueuePanel() {
     <div>
       <div className="row row-between" style={{ marginBottom: 6 }}>
         <h3 style={{ margin: 0 }}>
-          Queue{" "}
+          Prompt Queue{" "}
           <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}>
             {queuedCount} pending
           </span>
         </h3>
       </div>
+      {queue.activePromptId && (
+        <div className="queue-active">
+          <span className="muted" style={{ fontSize: 12 }}>
+            Active prompt {queue.activePromptId}
+          </span>
+        </div>
+      )}
 
       <div className="stack-sm">
         {queue.entries.map((entry) => (

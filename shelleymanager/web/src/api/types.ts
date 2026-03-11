@@ -52,6 +52,12 @@ export interface CreateWorkspaceRequest {
   };
 }
 
+export interface PatchWorkspaceRequest {
+  runtime?: {
+    localTools?: string[];
+  };
+}
+
 // --- Topic types ---
 
 export interface TopicInfo {
@@ -158,20 +164,24 @@ export interface ManagerEvent {
 
 export interface RegisterToolRequest {
   name: string;
-  description: string;
-  provider: string;
-  protocol: string;
+  description?: string;
+  provider?: string;
+  protocol?: string;
   transport: {
     type: string;
-    command: string;
-    args: string[];
-    cwd: string;
+    command?: string;
+    args?: string[];
+    cwd?: string;
+    env?: Record<string, string>;
+    endpoint?: string;
+    url?: string;
+    headers?: Record<string, string>;
   };
-  tools: {
+  tools?: {
     name: string;
-    title: string;
-    description: string;
-    inputSchema: Record<string, unknown>;
+    title?: string;
+    description?: string;
+    inputSchema?: Record<string, unknown>;
   }[];
 }
 

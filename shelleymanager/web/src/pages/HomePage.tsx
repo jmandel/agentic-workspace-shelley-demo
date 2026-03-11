@@ -11,7 +11,6 @@ export function HomePage() {
   const fetchWorkspaces = useStore((s) => s.fetchWorkspaces);
   const fetchLocalTools = useStore((s) => s.fetchLocalTools);
   const fetchHealth = useStore((s) => s.fetchHealth);
-  const eventsStatus = useStore((s) => s.eventsStatus);
 
   useEffect(() => {
     // Discover namespace before fetching namespace-scoped data
@@ -50,16 +49,8 @@ export function HomePage() {
         </section>
 
         <section className="card">
-          <div className="row row-between" style={{ marginBottom: 8 }}>
-            <h2 style={{ margin: 0 }}>
-              Workspaces
-              <span
-                className="status-dot"
-                data-status={eventsStatus === "connected" ? "running" : "unavailable"}
-                title={`Live updates: ${eventsStatus}`}
-                style={{ marginLeft: 6 }}
-              />
-            </h2>
+          <div className="row row-between" style={{ marginBottom: 12 }}>
+            <h2 style={{ margin: 0 }}>Workspaces</h2>
             <button
               className="btn btn-secondary btn-sm"
               onClick={fetchWorkspaces}
@@ -73,9 +64,11 @@ export function HomePage() {
               {workspacesLoading ? "Loading..." : "No workspaces yet."}
             </p>
           ) : (
-            <div className="ws-list">
+            <div className="workspace-list-grid">
               {workspaces.map((ws) => (
-                <WorkspaceCard key={ws.name} workspace={ws} />
+                <div key={ws.name} className="card workspace-card-shell">
+                  <WorkspaceCard workspace={ws} />
+                </div>
               ))}
             </div>
           )}

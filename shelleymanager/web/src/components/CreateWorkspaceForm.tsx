@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useLocation } from "wouter";
 import { useStore } from "@/store";
 import * as api from "@/api/client";
+import { registerDemoJiraTool } from "@/api/demo-tools";
 import { LocalToolsPicker } from "./LocalToolsPicker";
 
 interface Props {
@@ -29,11 +30,15 @@ export function CreateWorkspaceForm({ onCreated }: Props) {
     setStatus("Creating workspace...");
 
     try {
+      const runtimeLocalTools = [...selectedTools];
+      if (jiraEnabled && !runtimeLocalTools.includes("hl7-jira-support")) {
+        runtimeLocalTools.push("hl7-jira-support");
+      }
       await api.createWorkspace(namespace, {
         name,
         template: template || undefined,
         topics: topic ? [{ name: topic }] : undefined,
-        runtime: { localTools: [...selectedTools] },
+        runtime: { localTools: runtimeLocalTools.sort() },
       });
 
       if (jiraEnabled) {
@@ -76,13 +81,13 @@ export function CreateWorkspaceForm({ onCreated }: Props) {
         placeholder="Optional"
       />
 
-      <label htmlFor="ws-template">Template / Repo Label</label>
+      <label htmlFor="ws-template">Workspace Template</label>
       <input
         id="ws-template"
         type="text"
         value={template}
         onChange={(e) => setTemplate(e.target.value)}
-        placeholder="Optional"
+        placeholder="Optional built-in starter"
       />
 
       {localTools.length > 0 && (
@@ -97,22 +102,25 @@ export function CreateWorkspaceForm({ onCreated }: Props) {
       )}
 
       <label>MCP Tools</label>
-      <label className="tool-card row" style={{ margin: 0, gap: 10 }}>
-        <input
-          type="checkbox"
-          checked={jiraEnabled}
-          onChange={(e) => setJiraEnabled(e.target.checked)}
-        />
-        <div>
-          <div style={{ fontWeight: 500 }}>
-            Register <code>hl7-jira</code> MCP tool
-          </div>
-          <div className="muted" style={{ fontSize: 12 }}>
-            Writes a Bun MCP fixture into the workspace and registers it via the
-            tools API.
+      <div className="tool-card tool-card-choice">
+        <div className="tool-card-head">
+          <input
+            id="mcp-tool-hl7-jira"
+            className="tool-card-input"
+            type="checkbox"
+            checked={jiraEnabled}
+            onChange={(e) => setJiraEnabled(e.target.checked)}
+          />
+          <label htmlFor="mcp-tool-hl7-jira" className="tool-card-title">
+            hl7-jira
+          </label>
+        </div>
+        <div className="tool-card-copy">
+          <div className="tool-card-description">
+            Provides access to HL7 Jira issues from the real SQLite snapshot.
           </div>
         </div>
-      </label>
+      </div>
 
       <div className="row" style={{ marginTop: 14 }}>
         <button className="btn btn-primary" type="submit" disabled={busy}>
@@ -126,52 +134,4 @@ export function CreateWorkspaceForm({ onCreated }: Props) {
       )}
     </form>
   );
-}
-
-async function registerDemoJiraTool(namespace: string, workspace: string) {
-  const fixtureScript = await api.fetchDemoJiraScript();
-  await api.writeFile(namespace, workspace, ".demo/hl7-jira-mcp.js", fixtureScript);
-
-  try {
-    await api.registerTool(namespace, workspace, {
-      name: "hl7-jira",
-      description: "Search realistic HL7 Jira fixture data",
-      provider: "demo@acme.example",
-      protocol: "mcp",
-      transport: {
-        type: "stdio",
-        command: "bun",
-        args: ["./.demo/hl7-jira-mcp.js"],
-        cwd: ".",
-      },
-      tools: [
-        {
-          name: "jira.search",
-          title: "Search HL7 Jira",
-          description:
-            "Search realistic HL7 Jira issues related to validation and FHIRPath behavior",
-          inputSchema: {
-            type: "object",
-            properties: { query: { type: "string" } },
-            required: ["query"],
-            additionalProperties: false,
-          },
-        },
-      ],
-    });
-  } catch (err) {
-    if (!(err instanceof Error) || !err.message.includes("409")) throw err;
-  }
-
-  try {
-    await api.grantTool(namespace, workspace, "hl7-jira", {
-      subject: "agent:*",
-      tools: ["jira.search"],
-      access: "allowed",
-      approvers: [],
-      scope: {},
-    });
-  } catch (err) {
-    if (!(err instanceof Error) || !err.message.includes("409")) throw err;
-  }
 }

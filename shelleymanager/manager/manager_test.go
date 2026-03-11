@@ -191,12 +191,15 @@ func TestManagerRegistersWorkspaceToolAsManagedProxy(t *testing.T) {
 			createBodies = append(createBodies, string(body))
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
-			io.WriteString(w, `{"name":"hl7-jira","protocol":"mcp","transport":{"type":"manager_proxy"},"tools":[{"name":"jira.search"}]}`)
+			io.WriteString(w, `{"name":"hl7-jira","protocol":"mcp","transport":{"type":"manager_proxy"}}`)
+		case r.URL.Path == "/ws/tools" && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `[{"name":"hl7-jira","protocol":"mcp","transport":{"type":"manager_proxy"}}]`)
 		case r.URL.Path == "/ws/tools/hl7-jira" && r.Method == http.MethodGet:
 			body, _ := io.ReadAll(r.Body)
 			getBodies = append(getBodies, string(body))
 			w.Header().Set("Content-Type", "application/json")
-			io.WriteString(w, `{"name":"hl7-jira","protocol":"mcp","transport":{"type":"manager_proxy"},"tools":[{"name":"jira.search"}]}`)
+			io.WriteString(w, `{"name":"hl7-jira","protocol":"mcp","transport":{"type":"manager_proxy"}}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -265,7 +268,7 @@ func TestManagerRegistersWorkspaceToolAsManagedProxy(t *testing.T) {
 
 	registerRes, err := http.Post(server.URL+"/apis/v1/namespaces/acme/workspaces/bp-ig-fix/tools", "application/json", strings.NewReader(`{
 		"name":"hl7-jira",
-		"description":"Search the real HL7 Jira snapshot",
+		"description":"Search and inspect issues from the real HL7 Jira SQLite snapshot",
 		"protocol":"mcp",
 		"provider":"demo@acme.example",
 		"credentialRef":"secret://jira/demo",
@@ -275,8 +278,7 @@ func TestManagerRegistersWorkspaceToolAsManagedProxy(t *testing.T) {
 			"args":["/tools/hl7-jira-support/bin/hl7-jira-mcp.js"],
 			"cwd":"/tools/hl7-jira-support",
 			"env":{"HL7_JIRA_DB":"/tools/hl7-jira-support/data/jira-data.db"}
-		},
-		"tools":[{"name":"jira.search"}]
+		}
 	}`))
 	if err != nil {
 		t.Fatal(err)
@@ -293,8 +295,29 @@ func TestManagerRegistersWorkspaceToolAsManagedProxy(t *testing.T) {
 	if !strings.Contains(string(detailBody), `"command":"bun"`) || !strings.Contains(string(detailBody), `"/tools/hl7-jira-support/bin/hl7-jira-mcp.js"`) {
 		t.Fatalf("expected public tool detail to preserve original transport, got %s", string(detailBody))
 	}
+	if !strings.Contains(string(detailBody), `"HL7_JIRA_DB":{"redacted":true}`) {
+		t.Fatalf("expected public tool detail to redact env values, got %s", string(detailBody))
+	}
+	if strings.Contains(string(detailBody), `"/tools/hl7-jira-support/data/jira-data.db"`) {
+		t.Fatalf("expected public tool detail to hide env values, got %s", string(detailBody))
+	}
 	if strings.Contains(string(detailBody), `"type":"manager_proxy"`) {
 		t.Fatalf("expected public tool detail to hide manager_proxy, got %s", string(detailBody))
+	}
+	listRes, err := http.Get(server.URL + "/apis/v1/namespaces/acme/workspaces/bp-ig-fix/tools")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listRes.Body.Close()
+	listBody, err := io.ReadAll(listRes.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(listBody), `"HL7_JIRA_DB":{"redacted":true}`) {
+		t.Fatalf("expected public tool list to redact env values, got %s", string(listBody))
+	}
+	if strings.Contains(string(listBody), `"/tools/hl7-jira-support/data/jira-data.db"`) {
+		t.Fatalf("expected public tool list to hide env values, got %s", string(listBody))
 	}
 
 	if len(createBodies) != 1 {
@@ -904,6 +927,103 @@ func TestManagerRecoverPersistedWorkspaces(t *testing.T) {
 	}
 }
 
+func TestManagerPatchWorkspaceLocalTools(t *testing.T) {
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/ws/health":
+			io.WriteString(w, `{"status":"ok"}`)
+		case r.URL.Path == "/ws/topics" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{"name":"bp-example-validator"}`)
+		case r.URL.Path == "/ws/topics":
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `[{"name":"bp-example-validator","clients":0,"busy":false,"createdAt":"2026-03-10T00:00:00Z"}]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer runtime.Close()
+	runtimeURL, _ := url.Parse(runtime.URL)
+
+	stopCount := 0
+	launcher := &fakeLauncher{
+		baseDir: t.TempDir(),
+		runtime: &Runtime{
+			Name:    "bp-ig-fix",
+			APIBase: runtimeURL,
+			Mode:    "fake",
+			Health:  func(context.Context) error { return nil },
+			Stop: func(context.Context) error {
+				stopCount++
+				return nil
+			},
+		},
+	}
+	localTools := []LocalTool{
+		{
+			Name:        "fhir-validator",
+			Description: "FHIR Validator CLI",
+			HostRoot:    t.TempDir(),
+			Commands:    []LocalToolCommand{{Name: "fhir-validator", RelativePath: "bin/fhir-validator"}},
+		},
+		{
+			Name:        "hl7-jira-support",
+			Exposure:    localToolExposureSupportBundle,
+			Description: "HL7 Jira support bundle",
+			HostRoot:    t.TempDir(),
+		},
+	}
+	mgr, err := New(Config{DefaultNamespace: "acme", Launcher: launcher, LocalTools: localTools})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(mgr)
+	defer server.Close()
+
+	createRes, err := http.Post(server.URL+"/apis/v1/namespaces/acme/workspaces", "application/json", strings.NewReader(`{"name":"bp-ig-fix","topics":[{"name":"bp-example-validator"}],"runtime":{"localTools":["fhir-validator"]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	createRes.Body.Close()
+	if createRes.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d", createRes.StatusCode)
+	}
+
+	req, err := http.NewRequest(http.MethodPatch, server.URL+"/apis/v1/namespaces/acme/workspaces/bp-ig-fix", strings.NewReader(`{"runtime":{"localTools":["fhir-validator","hl7-jira-support"]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	patchRes, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer patchRes.Body.Close()
+	if patchRes.StatusCode != http.StatusOK {
+		t.Fatalf("patch status = %d", patchRes.StatusCode)
+	}
+	var detail workspaceDetail
+	if err := json.NewDecoder(patchRes.Body).Decode(&detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.Runtime == nil || len(detail.Runtime.LocalTools) != 2 {
+		t.Fatalf("unexpected patched runtime local tools %#v", detail.Runtime)
+	}
+	if stopCount != 1 {
+		t.Fatalf("expected one runtime stop during patch, got %d", stopCount)
+	}
+
+	launcher.mu.Lock()
+	defer launcher.mu.Unlock()
+	if len(launcher.launches) != 2 {
+		t.Fatalf("expected create + relaunch after patch, got %d launches", len(launcher.launches))
+	}
+	last := launcher.launches[len(launcher.launches)-1]
+	if !sameLocalToolSelection(last.LocalTools, localTools) {
+		t.Fatalf("unexpected launch local tools %#v", last.LocalTools)
+	}
+}
+
 func TestManagerRecoverWorkspacesIgnoresOtherNamespaces(t *testing.T) {
 	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/ws/health" {
@@ -1035,14 +1155,11 @@ func TestManagerUIRoutes(t *testing.T) {
 	}
 	defer homeRes.Body.Close()
 	homeBody, _ := io.ReadAll(homeRes.Body)
-	if !strings.Contains(string(homeBody), "Create Workspace") || !strings.Contains(string(homeBody), "/apis/v1/local-tools") {
+	if !strings.Contains(string(homeBody), `<div id="root"></div>`) || !strings.Contains(string(homeBody), `/assets/`) {
 		t.Fatalf("unexpected home page body: %s", homeBody)
 	}
-	if !strings.Contains(string(homeBody), "Participant Name") || !strings.Contains(string(homeBody), "WS Language Tutorial") {
-		t.Fatalf("expected home page participant and tutorial controls, got %s", homeBody)
-	}
-	if !strings.Contains(string(homeBody), "history.scrollRestoration = 'manual'") || !strings.Contains(string(homeBody), "window.scrollTo(0, 0)") {
-		t.Fatalf("expected home page body to disable animated/implicit scroll restoration, got %s", homeBody)
+	if !strings.Contains(string(homeBody), "<title>Shelley Manager</title>") {
+		t.Fatalf("expected home page title in body, got %s", homeBody)
 	}
 
 	guideRes, err := http.Get(server.URL + "/ws-language")
@@ -1051,11 +1168,8 @@ func TestManagerUIRoutes(t *testing.T) {
 	}
 	defer guideRes.Body.Close()
 	guideBody, _ := io.ReadAll(guideRes.Body)
-	if !strings.Contains(string(guideBody), "Queueing Trick") || !strings.Contains(string(guideBody), "ws validator") {
+	if !strings.Contains(string(guideBody), `<div id="root"></div>`) || !strings.Contains(string(guideBody), `/assets/`) {
 		t.Fatalf("unexpected ws language guide body: %s", guideBody)
-	}
-	if !strings.Contains(string(guideBody), "Whole Demo Commands") {
-		t.Fatalf("expected ws language guide to include concrete demo commands, got %s", guideBody)
 	}
 
 	createRes, err := http.Post(server.URL+"/apis/v1/namespaces/acme/workspaces", "application/json", strings.NewReader(`{"name":"bp-ig-fix","topics":[{"name":"bp-example-validator"}]}`))
@@ -1073,28 +1187,7 @@ func TestManagerUIRoutes(t *testing.T) {
 	}
 	defer appRes.Body.Close()
 	appBody, _ := io.ReadAll(appRes.Body)
-	if !strings.Contains(string(appBody), "WS_MANAGER") || !strings.Contains(string(appBody), "/acp/acme/bp-ig-fix/topics/bp-example-validator") {
+	if !strings.Contains(string(appBody), `<div id="root"></div>`) || !strings.Contains(string(appBody), `/assets/`) {
 		t.Fatalf("unexpected app page body: %s", appBody)
-	}
-	if !strings.Contains(string(appBody), "Connecting...") || !strings.Contains(string(appBody), "Realtime connection failed") {
-		t.Fatalf("expected app page to expose realtime connection status text, got %s", appBody)
-	}
-	if !strings.Contains(string(appBody), "Delete Topic") {
-		t.Fatalf("expected app page body to expose topic deletion controls, got %s", appBody)
-	}
-	if !strings.Contains(string(appBody), "Prompt Queue") || !strings.Contains(string(appBody), "Clear My Queue") {
-		t.Fatalf("expected app page body to expose queue controls, got %s", appBody)
-	}
-	if !strings.Contains(string(appBody), "Participant Name") || !strings.Contains(string(appBody), "Use Name") || !strings.Contains(string(appBody), "WS Language Tutorial") {
-		t.Fatalf("expected app page body to expose participant naming and tutorial controls, got %s", appBody)
-	}
-	if !strings.Contains(string(appBody), ".msg-body { white-space: pre-wrap; }") {
-		t.Fatalf("expected app page body to preserve multiline message rendering, got %s", appBody)
-	}
-	if !strings.Contains(string(appBody), "history.scrollRestoration = 'manual'") || !strings.Contains(string(appBody), "scheduleInitialScrollToLatest()") || !strings.Contains(string(appBody), "window.scrollTo(0, document.documentElement.scrollHeight)") {
-		t.Fatalf("expected app page body to disable animated/implicit scroll restoration and jump instantly to latest content, got %s", appBody)
-	}
-	if strings.Contains(string(appBody), "Refresh Queue") {
-		t.Fatalf("expected app page body to avoid a manual refresh queue button, got %s", appBody)
 	}
 }

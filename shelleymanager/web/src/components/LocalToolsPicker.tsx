@@ -7,41 +7,47 @@ interface Props {
 }
 
 export function LocalToolsPicker({ tools, selected, onToggle }: Props) {
-  if (tools.length === 0) {
+  const visibleTools = tools.filter((tool) => tool.exposure !== "support_bundle");
+
+  if (visibleTools.length === 0) {
     return <p className="muted">No local tools published by this manager.</p>;
   }
 
   return (
     <div className="stack-sm">
-      {tools.map((tool) => (
-        <label key={tool.name} className="tool-card row" style={{ margin: 0, gap: 10 }}>
-          <input
-            type="checkbox"
-            checked={selected.has(tool.name)}
-            onChange={() => onToggle(tool.name)}
-          />
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 600 }}>{tool.name}</div>
+      {visibleTools.map((tool) => (
+        <div key={tool.name} className="tool-card tool-card-choice">
+          <div className="tool-card-head">
+            <input
+              id={`local-tool-${tool.name}`}
+              className="tool-card-input"
+              type="checkbox"
+              checked={selected.has(tool.name)}
+              onChange={() => onToggle(tool.name)}
+            />
+            <label htmlFor={`local-tool-${tool.name}`} className="tool-card-title">
+              {tool.name}
+            </label>
+          </div>
+          <div className="tool-card-copy">
             {tool.description && (
-              <div className="muted" style={{ fontSize: 13 }}>
-                {tool.description}
-              </div>
+              <div className="tool-card-description">{tool.description}</div>
             )}
             {tool.requirements && tool.requirements.length > 0 && (
-              <div className="muted" style={{ fontSize: 12 }}>
+              <div className="tool-card-meta">
                 Requires: {tool.requirements.join(", ")}
               </div>
             )}
             {tool.commands && tool.commands.length > 0 && (
-              <div className="muted" style={{ fontSize: 12 }}>
-                Commands:{" "}
+              <div className="tool-card-meta">
+                Command:{" "}
                 {tool.commands.map((c) => (
                   <code key={c.name}>{c.name}</code>
                 ))}
               </div>
             )}
           </div>
-        </label>
+        </div>
       ))}
     </div>
   );

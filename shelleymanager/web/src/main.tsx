@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { Router, Route, Switch } from "wouter";
 import { HomePage } from "@/pages/HomePage";
+import { WorkspacePage } from "@/pages/WorkspacePage";
 import { TopicPage } from "@/pages/TopicPage";
 import { TutorialPage } from "@/pages/TutorialPage";
 import "@/index.css";
@@ -14,6 +15,10 @@ function App() {
         <Route
           path="/app/:namespace/:workspace/:topic"
           component={TopicPage}
+        />
+        <Route
+          path="/app/:namespace/:workspace"
+          component={WorkspacePage}
         />
         <Route path="/ws-language" component={TutorialPage} />
         <Route>

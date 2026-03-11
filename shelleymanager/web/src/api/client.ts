@@ -3,6 +3,7 @@ import type {
   WorkspaceSummary,
   WorkspaceDetail,
   CreateWorkspaceRequest,
+  PatchWorkspaceRequest,
   QueueSnapshot,
   RegisterToolRequest,
   GrantRequest,
@@ -70,6 +71,17 @@ export async function createWorkspace(
 ): Promise<WorkspaceDetail> {
   return request<WorkspaceDetail>(namespacedBase(namespace), {
     method: "POST",
+    body: JSON.stringify(req),
+  });
+}
+
+export async function patchWorkspace(
+  namespace: string,
+  name: string,
+  req: PatchWorkspaceRequest,
+): Promise<WorkspaceDetail> {
+  return request<WorkspaceDetail>(workspaceBase(namespace, name), {
+    method: "PATCH",
     body: JSON.stringify(req),
   });
 }
@@ -144,7 +156,7 @@ export async function updateQueuedPrompt(
 ): Promise<QueueSnapshot> {
   return request<QueueSnapshot>(
     `${workspaceBase(namespace, workspace)}/topics/${encodeURIComponent(topic)}/queue/${encodeURIComponent(promptId)}`,
-    { method: "PATCH", body: JSON.stringify({ text }) },
+    { method: "PATCH", body: JSON.stringify({ data: text }) },
     clientId,
   );
 }
@@ -177,6 +189,30 @@ export async function clearMyQueue(
   );
 }
 
+// --- Managed tools ---
+
+export interface ManagedToolDef {
+  name: string;
+  description?: string;
+}
+
+export interface ManagedTool {
+  name: string;
+  description?: string;
+  protocol?: string;
+  provider?: string;
+  tools?: ManagedToolDef[];
+}
+
+export async function listTools(
+  namespace: string,
+  workspace: string,
+): Promise<ManagedTool[]> {
+  return request<ManagedTool[]>(
+    `${workspaceBase(namespace, workspace)}/tools`,
+  );
+}
+
 // --- Tool registration (for demo setup) ---
 
 export async function registerTool(
@@ -200,29 +236,6 @@ export async function grantTool(
     `${workspaceBase(namespace, workspace)}/tools/${encodeURIComponent(toolName)}/grants`,
     { method: "POST", body: JSON.stringify(req) },
   );
-}
-
-export async function writeFile(
-  namespace: string,
-  workspace: string,
-  filePath: string,
-  content: string,
-): Promise<void> {
-  const url = `${workspaceBase(namespace, workspace)}/files/${filePath}`;
-  const res = await fetch(`${BASE}${url}`, {
-    method: "PUT",
-    headers: { "Content-Type": "text/plain; charset=utf-8" },
-    body: content,
-  });
-  if (!res.ok) {
-    throw new Error(`write file: ${res.status}`);
-  }
-}
-
-export async function fetchDemoJiraScript(): Promise<string> {
-  const res = await fetch(`${BASE}/demo-assets/hl7-jira-mcp.js`);
-  if (!res.ok) throw new Error(`fetch jira fixture: ${res.status}`);
-  return res.text();
 }
 
 // --- WebSocket URL builder ---

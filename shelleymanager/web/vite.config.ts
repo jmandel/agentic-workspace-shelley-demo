@@ -45,10 +45,6 @@ export default defineConfig({
         target: managerUrl,
         changeOrigin: true,
       },
-      "/demo-assets": {
-        target: managerUrl,
-        changeOrigin: true,
-      },
       "/shelley": {
         target: managerUrl,
         changeOrigin: true,

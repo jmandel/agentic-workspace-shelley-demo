@@ -205,7 +205,7 @@ Content-Type: application/json
 
 {
   "name": "hl7-jira",
-  "description": "Search the real HL7 Jira snapshot",
+  "description": "Search and inspect issues from the real HL7 Jira SQLite snapshot",
   "provider": "demo@acme.example",
   "protocol": "mcp",
   "transport": {
@@ -216,23 +216,7 @@ Content-Type: application/json
     "env": {
       "HL7_JIRA_DB": "/tools/hl7-jira-support/data/jira-data.db"
     }
-  },
-  "tools": [
-    {
-      "name": "jira.search",
-      "title": "Search HL7 Jira",
-      "description": "Search HL7 Jira issues related to validator behavior",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "query": { "type": "string" },
-          "limit": { "type": "integer", "minimum": 1, "maximum": 10 }
-        },
-        "required": ["query"],
-        "additionalProperties": false
-      }
-    }
-  ]
+  }
 }
 ```
 
@@ -242,7 +226,9 @@ Meaning:
 - the manager stores the real transport binding outside the workspace runtime
 - the manager registers a sanitized internal `manager_proxy` transport inside
   Shelley
-- Shelley learns the tool shape, but not the real launch details
+- Shelley learns the tool binding, but not the real launch details
+- MCP sub-tools like `jira.search` and `jira.read` are discovered later from the
+  MCP server rather than being preregistered in the create payload
 
 ### 3. Grant the agent access to the MCP tool
 
@@ -255,7 +241,7 @@ Content-Type: application/json
 
 {
   "subject": "agent:*",
-  "tools": ["jira.search"],
+  "tools": ["*"],
   "access": "allowed",
   "approvers": [],
   "scope": {}
@@ -264,7 +250,8 @@ Content-Type: application/json
 
 Meaning:
 
-- the agent can use `jira.search` without per-call approval
+- the agent can use the discovered `hl7-jira` MCP capabilities without per-call
+  approval
 - this is the only tool grant needed for the mainline demo
 
 ## Tools In The Demo
@@ -284,8 +271,8 @@ Meaning:
   the mounted `hl7-jira-support` bundle
 - backing data: the real `fhir-community-search` Jira SQLite snapshot mounted at
   `/tools/hl7-jira-support/data/jira-data.db`
-- purpose: search real HL7 Jira issues derived from `fhir-community-search`
-- tool name exposed through MCP: `jira.search`
+- purpose: search and inspect real HL7 Jira issues derived from `fhir-community-search`
+- tool names exposed through MCP: `jira.search`, `jira.read`
 
 Typical results for the demo query `validation error handling` include:
 
@@ -478,6 +465,15 @@ The real Jira snapshot returns results like:
 
 - `FHIR-20482` — `FHIRPath conformsTo Validation of Warnings/Error handling pull request`
 - `FHIR-31991` — `Specify behavior for incorrect type returned by expressions`
+
+### 6. Priya opens one Jira issue in full
+
+Priya can then ask Shelley to read one specific issue:
+
+> Open FHIR-20482 and show me the full stored Jira record.
+
+Shelley invokes `hl7-jira` action `jira.read` and returns the full stored JSON
+document for that issue.
 
 Shelley summarizes:
 

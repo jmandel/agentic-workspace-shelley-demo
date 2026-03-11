@@ -14,7 +14,7 @@ import * as api from "@/api/client";
 
 export interface ChatMessage {
   id: string;
-  kind: "system" | "user" | "assistant" | "error" | "tool" | "injected" | "interrupted";
+  kind: "system" | "user" | "assistant" | "error" | "tool" | "interrupted";
   label: string;
   body: string;
   ts: number;
@@ -163,7 +163,8 @@ export const useStore = create<AppState>((set, get) => ({
   fetchLocalTools: async () => {
     if (get().localToolsLoaded) return;
     const tools = await api.fetchLocalTools();
-    const selected = tools?.length ? new Set([tools[0]!.name]) : new Set<string>();
+    const preferred = tools?.find((tool) => tool.exposure !== "support_bundle");
+    const selected = preferred ? new Set([preferred.name]) : new Set<string>();
     set({ localTools: tools ?? [], localToolsLoaded: true, selectedLocalTools: selected });
   },
   toggleLocalTool: (name: string) => {
@@ -452,7 +453,7 @@ export const useStore = create<AppState>((set, get) => ({
           break;
         case "user":
           pushMessage(
-            msg.injected ? "injected" : "user",
+            "user",
             msg.submittedBy?.id ?? "User",
             msg.data ?? "",
           );

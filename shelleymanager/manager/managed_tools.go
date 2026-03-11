@@ -213,6 +213,26 @@ func (m *Manager) createManagedWorkspaceTool(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// If no tools provided, discover them from the MCP server.
+	toolsPayload := req.Tools
+	if len(toolsPayload) == 0 {
+		toolsPayload = req.Actions
+	}
+	if len(toolsPayload) == 0 && req.Protocol == "mcp" {
+		binding := managedToolBinding{
+			ToolName:           req.Name,
+			Protocol:           req.Protocol,
+			ExecutionTransport: executionTransport,
+		}
+		discovered, err := m.listMCPToolDefs(r.Context(), binding)
+		if err != nil {
+			m.logger.Error("MCP tool discovery failed at registration", "tool", req.Name, "error", err)
+			// Continue without tools — tool will be registered but not exposed to the LLM
+		} else if len(discovered) > 0 {
+			toolsPayload, _ = json.Marshal(discovered)
+		}
+	}
+
 	createPayloadMap := map[string]any{
 		"name":        req.Name,
 		"description": req.Description,
@@ -222,11 +242,8 @@ func (m *Manager) createManagedWorkspaceTool(w http.ResponseWriter, r *http.Requ
 			"type": "manager_proxy",
 		},
 	}
-	if len(req.Actions) > 0 {
-		createPayloadMap["actions"] = json.RawMessage(req.Actions)
-	}
-	if len(req.Tools) > 0 {
-		createPayloadMap["tools"] = json.RawMessage(req.Tools)
+	if len(toolsPayload) > 0 {
+		createPayloadMap["tools"] = json.RawMessage(toolsPayload)
 	}
 	createPayload, err := json.Marshal(createPayloadMap)
 	if err != nil {
@@ -350,6 +367,53 @@ func managerProxyAuthorized(r *http.Request, token string) bool {
 		return true
 	}
 	return strings.TrimSpace(r.Header.Get("X-Workspace-Token")) == token
+}
+
+type mcpToolDef struct {
+	Name        string          `json:"name"`
+	Title       string          `json:"title,omitempty"`
+	Description string          `json:"description,omitempty"`
+	InputSchema json.RawMessage `json:"inputSchema,omitempty"`
+}
+
+func (m *Manager) listMCPToolDefs(ctx context.Context, binding managedToolBinding) ([]mcpToolDef, error) {
+	cfg, err := decodeManagedMCPTransport(binding)
+	if err != nil {
+		return nil, err
+	}
+	transport, err := m.newManagedMCPTransport(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "shelleymanager", Version: "workspace"}, nil)
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		return nil, fmt.Errorf("connect mcp tool %s for discovery: %w", binding.ToolName, err)
+	}
+	defer session.Close()
+
+	result, err := session.ListTools(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("list mcp tools for %s: %w", binding.ToolName, err)
+	}
+
+	defs := make([]mcpToolDef, 0, len(result.Tools))
+	for _, tool := range result.Tools {
+		def := mcpToolDef{
+			Name:        tool.Name,
+			Title:       tool.Title,
+			Description: tool.Description,
+		}
+		if tool.InputSchema != nil {
+			schemaJSON, err := json.Marshal(tool.InputSchema)
+			if err == nil {
+				def.InputSchema = schemaJSON
+			}
+		}
+		defs = append(defs, def)
+	}
+	return defs, nil
 }
 
 func (m *Manager) invokeManagedTool(ctx context.Context, binding managedToolBinding, action string, input json.RawMessage) (string, error) {
@@ -629,6 +693,7 @@ func overlayManagedToolPublic(tool map[string]any, binding managedToolBinding) {
 	if transport := binding.publicTransportPayload(); len(transport) > 0 {
 		var decoded any
 		if err := json.Unmarshal(transport, &decoded); err == nil {
+			decoded = redactTransportForRead(decoded)
 			tool["transport"] = decoded
 		}
 	}
@@ -650,6 +715,33 @@ func overlayManagedToolPublic(tool map[string]any, binding managedToolBinding) {
 			tool["config"] = decoded
 		}
 	}
+}
+
+func redactTransportForRead(decoded any) any {
+	transport, ok := decoded.(map[string]any)
+	if !ok {
+		return decoded
+	}
+	if env, ok := transport["env"].(map[string]any); ok {
+		transport["env"] = redactNamedSecrets(env)
+	}
+	if headers, ok := transport["headers"].(map[string]any); ok {
+		transport["headers"] = redactNamedSecrets(headers)
+	}
+	return transport
+}
+
+func redactNamedSecrets(values map[string]any) map[string]any {
+	if len(values) == 0 {
+		return map[string]any{}
+	}
+	redacted := make(map[string]any, len(values))
+	for name := range values {
+		redacted[name] = map[string]any{
+			"redacted": true,
+		}
+	}
+	return redacted
 }
 
 func cloneRawJSON(raw json.RawMessage) json.RawMessage {

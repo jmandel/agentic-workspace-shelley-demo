@@ -1269,3 +1269,40 @@
 - Validation notes:
   - focused Shelley queue/inject/interrupt tests passed
   - the full root smoke passed again after updating its queue-edit request body
+
+### 2026-03-10 update — redact transport secrets on tool reads
+- Tightened the manager-backed MCP read model:
+  - `POST /tools` still accepts concrete `transport.env` and `transport.headers`
+    values
+  - `POST /tools` responses and `GET /tools*` responses now redact those values
+    instead of echoing them back
+- This keeps the public tool read surface useful for inspection while making the
+  write-vs-read distinction explicit:
+  - callers can submit env/header bindings on create
+  - subsequent reads only reveal which keys are present
+- The change is implemented in the manager overlay layer, so Shelley still sees
+  only the sanitized `manager_proxy` transport either way.
+
+### 2026-03-10 update — React UI cleanup and transport-only Jira registration
+- Finished the move to the React-only manager UI:
+  - Go now just serves the built static app and asset files
+  - the older built-in Go HTML interface is no longer the live path
+- Cleaned up the React topic/workspace surfaces:
+  - workspace list is organized as per-workspace cards with separate topic and
+    creation sections
+  - topic header now uses one stronger breadcrumb/title line plus a compact
+    control strip instead of multiple equal-width boxed panels
+  - queue panel now explicitly shows the active prompt and keeps queue actions
+    grouped together
+  - local/MCP tool cards use aligned title rows instead of uneven checkbox/text
+    stacks
+- Refined the demo MCP registration shape again:
+  - `hl7-jira` demo setup now stays transport-only at `POST /tools`
+  - detailed MCP sub-tools are not preregistered in the browser helper payload
+  - the demo grant uses wildcard `tools: ["*"]`, leaving concrete
+    `jira.search` / `jira.read` capability discovery to the MCP runtime
+- Validation notes:
+  - `bun test && bun run build` in `shelleymanager/web`
+  - `go test ./...` in `shelleymanager`
+  - `go test ./server ./loop` in `shelley`
+  - `./test/smoke.sh`

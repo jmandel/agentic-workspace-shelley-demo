@@ -3,6 +3,7 @@ import { Link, useParams, useLocation } from "wouter";
 import { useStore } from "@/store";
 import { MessageList } from "@/components/MessageList";
 import { QueuePanel } from "@/components/QueuePanel";
+import { ParticipantNameInput } from "@/components/ParticipantNameInput";
 import * as api from "@/api/client";
 
 export function TopicPage() {
@@ -54,45 +55,56 @@ export function TopicPage() {
     <div className="page-topic">
       {/* Header */}
       <div className="card" style={{ flexShrink: 0 }}>
-        <div className="row row-between">
-          <div className="row" style={{ gap: 6 }}>
+        <div className="row row-between" style={{ gap: 12 }}>
+          <div className="topic-breadcrumbs">
             <Link href="/" style={{ color: "var(--muted)", textDecoration: "none", fontSize: 13 }}>
               Workspaces
             </Link>
             <span className="muted" style={{ fontSize: 13 }}>/</span>
-            <span style={{ fontSize: 13, fontWeight: 500 }}>{workspace}</span>
+            <Link
+              href={`/app/${encodeURIComponent(namespace)}/${encodeURIComponent(workspace)}`}
+              style={{ fontSize: 13, fontWeight: 500, textDecoration: "none", color: "inherit" }}
+            >
+              {workspace}
+            </Link>
             <span className="muted" style={{ fontSize: 13 }}>/</span>
-            <span style={{ fontSize: 13, fontWeight: 500 }}>{topic}</span>
+            <span className="topic-breadcrumb-current">{topic}</span>
           </div>
           <div className="row" style={{ gap: 6 }}>
             <span className="status-dot" data-status={connectionStatus} title={connectionStatus} />
             <span className="muted" style={{ fontSize: 12 }}>{connectionStatus}</span>
           </div>
         </div>
-        <div className="row" style={{ marginTop: 6, gap: 6 }}>
-          <Link href="/ws-language" className="btn btn-secondary btn-sm">
-            WS Reference
-          </Link>
-          <button className="btn btn-danger btn-sm" onClick={handleDeleteTopic}>
-            Delete Topic
-          </button>
-        </div>
-        <details style={{ marginTop: 6 }}>
-          <summary className="muted" style={{ fontSize: 12, cursor: "pointer" }}>
-            Open in CLI
-          </summary>
-          <pre style={{ marginTop: 4, fontSize: 11 }}>{cliCommand}</pre>
-        </details>
-        <details style={{ marginTop: 4 }}>
-          <summary className="muted" style={{ fontSize: 12, cursor: "pointer" }}>
-            Open in Shelley
-          </summary>
-          <div style={{ marginTop: 4 }}>
-            <a href={shelleyHref} className="btn btn-primary btn-sm">
-              Open in Shelley
-            </a>
+        <div className="topic-header-body">
+          <div className="topic-controls">
+            <section className="topic-control-block">
+              <div className="topic-toolbar-label">Participant</div>
+              <ParticipantNameInput compact showLabel={false} />
+            </section>
+
+            <section className="topic-control-block">
+              <div className="topic-toolbar-label">Topic Actions</div>
+              <div className="row" style={{ gap: 6 }}>
+                <Link href="/ws-language" className="btn btn-secondary btn-sm">
+                  WS Reference
+                </Link>
+                <a href={shelleyHref} className="btn btn-secondary btn-sm" target="_blank" rel="noopener noreferrer">
+                  Open in Shelley
+                </a>
+                <button className="btn btn-danger btn-sm" onClick={handleDeleteTopic}>
+                  Delete Topic
+                </button>
+              </div>
+            </section>
           </div>
-        </details>
+
+          <details className="topic-cli-details">
+            <summary className="muted" style={{ fontSize: 12, cursor: "pointer" }}>
+              Open in CLI
+            </summary>
+            <pre style={{ marginTop: 8, fontSize: 11 }}>{cliCommand}</pre>
+          </details>
+        </div>
       </div>
 
       {/* Messages — fills remaining space, scrolls */}

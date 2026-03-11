@@ -23,12 +23,12 @@ ifneq ($(filter 1 true yes,$(PREDICTABLE_ONLY)),)
 PREDICTABLE_FLAG := --predictable-only
 endif
 
-.PHONY: build run dev dev-predictable dev-claude dev-haiku web web-build clean help
+.PHONY: build run dev dev-predictable dev-claude dev-haiku web web-build web-test clean help
 
 help: ## Show this help
 	@grep -E '^[a-z][a-z_-]+:.*##' $(MAKEFILE_LIST) | sort | awk -F ':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
 
-build: ## Build the manager binary
+build: web-build ## Build the manager binary
 	go build -o bin/shelleymanager ./cmd/shelleymanager
 
 build-shelley: ## Build the shelley runtime binary
@@ -49,7 +49,7 @@ endif
 		$(PREDICTABLE_FLAG) \
 		--debug
 
-dev: build-shelley ## Run manager from source with go run (defaults to PROFILE=predictable)
+dev: build-shelley web-build ## Run manager from source with go run (defaults to PROFILE=predictable)
 ifneq (,$(filter $(PROFILE),claude-sonnet-4.6 claude-haiku-4.5))
 	@test -n "$$ANTHROPIC_API_KEY" || (echo "ANTHROPIC_API_KEY is required for PROFILE=$(PROFILE)" >&2; exit 1)
 endif
@@ -77,7 +77,10 @@ web: ## Start Vite dev server (port 5173, proxies to 31337)
 	cd web && bun run dev
 
 web-build: ## Production build of web UI
-	cd web && bun run build
+	cd web && bun install && bun run build
+
+web-test: ## Run Bun tests for the web UI helpers
+	cd web && bun test
 
 clean: ## Remove build artifacts and state
 	rm -rf bin/
