@@ -126,8 +126,36 @@ export const useStore = create<AppState>((set, get) => ({
   participantName: initialIdentity.displayName,
   participantSubject: initialIdentity.subject,
   setParticipantName: (raw: string) => {
+    const state = get();
     const identity = updateClientDisplayName(raw);
+    if (
+      state.participantName === identity.displayName &&
+      state.participantSubject === identity.subject
+    ) {
+      return;
+    }
+
+    const preservedTopicState = state.topicConnection
+      ? {
+          messages: state.messages,
+          queue: state.queue,
+          turnActive: state.turnActive,
+        }
+      : null;
+
     set({ participantName: identity.displayName, participantSubject: identity.subject });
+
+    if (state._eventsWs !== null && state.namespaceLoaded) {
+      state.connectManagerEvents(state.namespace);
+    }
+
+    if (state.topicConnection) {
+      const { namespace, workspace, topic } = state.topicConnection;
+      state.connectTopic(namespace, workspace, topic);
+      if (preservedTopicState) {
+        set(preservedTopicState);
+      }
+    }
   },
 
   // --- Namespace ---

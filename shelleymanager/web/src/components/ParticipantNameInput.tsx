@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useStore } from "@/store";
 
 export function ParticipantNameInput({
@@ -12,6 +12,12 @@ export function ParticipantNameInput({
   const setName = useStore((s) => s.setParticipantName);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(name);
+
+  useEffect(() => {
+    if (!editing) {
+      setDraft(name);
+    }
+  }, [editing, name]);
 
   const save = () => {
     setName(draft);

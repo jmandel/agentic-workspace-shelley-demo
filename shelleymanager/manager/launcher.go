@@ -341,7 +341,7 @@ func stopCommand(ctx context.Context, cmd *exec.Cmd, done <-chan error) error {
 	}
 	select {
 	case err := <-done:
-		if errors.Is(err, os.ErrProcessDone) {
+		if err == nil || errors.Is(err, os.ErrProcessDone) || isExpectedStopError(err) {
 			return nil
 		}
 		return err
@@ -354,7 +354,7 @@ func stopCommand(ctx context.Context, cmd *exec.Cmd, done <-chan error) error {
 
 	select {
 	case err := <-done:
-		if err == nil || errors.Is(err, os.ErrProcessDone) {
+		if err == nil || errors.Is(err, os.ErrProcessDone) || isExpectedStopError(err) {
 			return nil
 		}
 		return err
@@ -362,7 +362,7 @@ func stopCommand(ctx context.Context, cmd *exec.Cmd, done <-chan error) error {
 		_ = cmd.Process.Kill()
 		select {
 		case err := <-done:
-			if err == nil || errors.Is(err, os.ErrProcessDone) {
+			if err == nil || errors.Is(err, os.ErrProcessDone) || isExpectedStopError(err) {
 				return ctx.Err()
 			}
 			return errors.Join(ctx.Err(), err)
@@ -371,12 +371,25 @@ func stopCommand(ctx context.Context, cmd *exec.Cmd, done <-chan error) error {
 		}
 	case <-timer.C:
 		_ = cmd.Process.Kill()
-		if err := <-done; err == nil || errors.Is(err, os.ErrProcessDone) {
+		if err := <-done; err == nil || errors.Is(err, os.ErrProcessDone) || isExpectedStopError(err) {
 			return nil
 		} else {
 			return err
 		}
 	}
+}
+
+func isExpectedStopError(err error) bool {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return false
+	}
+	status, ok := exitErr.Sys().(syscall.WaitStatus)
+	if !ok || !status.Signaled() {
+		return false
+	}
+	sig := status.Signal()
+	return sig == syscall.SIGTERM || sig == syscall.SIGKILL
 }
 
 func (l CommandLauncher) WorkspacePaths(namespace, name string) (LaunchSpec, error) {
