@@ -23,6 +23,7 @@ func main() {
 		Namespace         string
 		StateDir          string
 		ShelleyUIMode     string
+		RuntimePortRange  string
 		RuntimeMode       string
 		ShelleyBinary     string
 		SharedToolsDir    string
@@ -42,6 +43,7 @@ func main() {
 	flag.StringVar(&cfg.Namespace, "namespace", "default", "Default namespace for compatibility /workspaces routes")
 	flag.StringVar(&cfg.StateDir, "state-dir", ".shelleymanager-state", "State root for manager metadata, logs, and runtime workspace dirs")
 	flag.StringVar(&cfg.ShelleyUIMode, "shelley-ui-mode", envOrDefault("SHELLEY_UI_MODE", "disabled"), "Shelley UI exposure mode: disabled or same_host_port")
+	flag.StringVar(&cfg.RuntimePortRange, "runtime-port-range", envOrDefault("SHELLEY_RUNTIME_PORT_RANGE", ""), "Optional Shelley runtime port range, for example 8100-9000")
 	flag.StringVar(&cfg.RuntimeMode, "runtime-mode", "process", "Runtime launch mode: process, docker, or bwrap")
 	flag.StringVar(&cfg.ShelleyBinary, "shelley-binary", "", "Path to Shelley binary for process/bwrap launch modes")
 	flag.StringVar(&cfg.SharedToolsDir, "tools-dir", "", "Optional shared host tools dir mounted read-only into runtimes at /tools")
@@ -63,18 +65,19 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel}))
 
 	launcher := manager.CommandLauncher{
-		Mode:            cfg.RuntimeMode,
-		StateRoot:       cfg.StateDir,
-		ShelleyBinary:   cfg.ShelleyBinary,
-		SharedToolsDir:  cfg.SharedToolsDir,
-		DockerBinary:    cfg.DockerBinary,
-		DockerImage:     cfg.DockerImage,
-		DockerCommand:   cfg.DockerCommand,
-		BwrapBinary:     cfg.BwrapBinary,
-		DefaultModel:    cfg.DefaultModel,
-		PredictableOnly: cfg.PredictableOnly,
-		ConfigPath:      cfg.ConfigPath,
-		DebugRuntime:    cfg.Debug,
+		Mode:             cfg.RuntimeMode,
+		StateRoot:        cfg.StateDir,
+		ShelleyBinary:    cfg.ShelleyBinary,
+		SharedToolsDir:   cfg.SharedToolsDir,
+		DockerBinary:     cfg.DockerBinary,
+		DockerImage:      cfg.DockerImage,
+		DockerCommand:    cfg.DockerCommand,
+		BwrapBinary:      cfg.BwrapBinary,
+		DefaultModel:     cfg.DefaultModel,
+		PredictableOnly:  cfg.PredictableOnly,
+		ConfigPath:       cfg.ConfigPath,
+		DebugRuntime:     cfg.Debug,
+		RuntimePortRange: cfg.RuntimePortRange,
 	}
 
 	cacheBase, err := os.UserCacheDir()

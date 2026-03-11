@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"net"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -180,5 +181,70 @@ func TestBuildBwrapCommandMountsSelectedLocalToolRoots(t *testing.T) {
 	got := strings.Join(cmd.Args, " ")
 	if !strings.Contains(got, "--ro-bind "+toolRoot+" /tools/fhir-validator") {
 		t.Fatalf("expected selected local tool ro-bind, got %q", got)
+	}
+}
+
+func TestParseRuntimePortRange(t *testing.T) {
+	tests := []struct {
+		raw      string
+		wantMin  int
+		wantMax  int
+		wantUsed bool
+		wantErr  bool
+	}{
+		{raw: "", wantUsed: false},
+		{raw: "8100", wantMin: 8100, wantMax: 8100, wantUsed: true},
+		{raw: "8100-9000", wantMin: 8100, wantMax: 9000, wantUsed: true},
+		{raw: " 8100 - 9000 ", wantMin: 8100, wantMax: 9000, wantUsed: true},
+		{raw: "9000-8100", wantErr: true},
+		{raw: "0-1", wantErr: true},
+		{raw: "abc", wantErr: true},
+		{raw: "8100-8200-8300", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		gotMin, gotMax, gotUsed, err := parseRuntimePortRange(tt.raw)
+		if tt.wantErr {
+			if err == nil {
+				t.Fatalf("parseRuntimePortRange(%q) expected error", tt.raw)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("parseRuntimePortRange(%q) unexpected error: %v", tt.raw, err)
+		}
+		if gotMin != tt.wantMin || gotMax != tt.wantMax || gotUsed != tt.wantUsed {
+			t.Fatalf("parseRuntimePortRange(%q) = (%d, %d, %v), want (%d, %d, %v)", tt.raw, gotMin, gotMax, gotUsed, tt.wantMin, tt.wantMax, tt.wantUsed)
+		}
+	}
+}
+
+func TestReserveLocalPortInRangeSinglePort(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	listener.Close()
+
+	got, err := reserveLocalPortInRange(port, port)
+	if err != nil {
+		t.Fatalf("reserveLocalPortInRange(%d,%d) unexpected error: %v", port, port, err)
+	}
+	if got != port {
+		t.Fatalf("reserveLocalPortInRange(%d,%d) = %d", port, port, got)
+	}
+}
+
+func TestReserveLocalPortInRangeFailsWhenOccupied(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	if _, err := reserveLocalPortInRange(port, port); err == nil {
+		t.Fatalf("expected reserveLocalPortInRange(%d,%d) to fail while occupied", port, port)
 	}
 }

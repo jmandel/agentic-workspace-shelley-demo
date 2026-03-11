@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -28,19 +29,20 @@ const (
 )
 
 type CommandLauncher struct {
-	Mode            string
-	StateRoot       string
-	ShelleyBinary   string
-	SharedToolsDir  string
-	DockerBinary    string
-	DockerImage     string
-	DockerCommand   string
-	BwrapBinary     string
-	DefaultModel    string
-	PredictableOnly bool
-	ConfigPath      string
-	DebugRuntime    bool
-	HealthTimeout   time.Duration
+	Mode             string
+	StateRoot        string
+	ShelleyBinary    string
+	SharedToolsDir   string
+	DockerBinary     string
+	DockerImage      string
+	DockerCommand    string
+	BwrapBinary      string
+	DefaultModel     string
+	PredictableOnly  bool
+	ConfigPath       string
+	DebugRuntime     bool
+	HealthTimeout    time.Duration
+	RuntimePortRange string
 }
 
 func (l CommandLauncher) Name() string {
@@ -70,7 +72,7 @@ func (l CommandLauncher) Launch(ctx context.Context, spec LaunchSpec) (*Runtime,
 		healthTimeout = 20 * time.Second
 	}
 
-	hostPort, err := reserveLocalPort()
+	hostPort, err := reserveRuntimePort(l.RuntimePortRange)
 	if err != nil {
 		return nil, err
 	}
@@ -305,6 +307,17 @@ func (l CommandLauncher) shelleyArgs(dbPath, workspaceDir string, hostPort int, 
 	return args
 }
 
+func reserveRuntimePort(rawRange string) (int, error) {
+	portMin, portMax, ranged, err := parseRuntimePortRange(rawRange)
+	if err != nil {
+		return 0, err
+	}
+	if !ranged {
+		return reserveLocalPort()
+	}
+	return reserveLocalPortInRange(portMin, portMax)
+}
+
 func reserveLocalPort() (int, error) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -312,6 +325,68 @@ func reserveLocalPort() (int, error) {
 	}
 	defer listener.Close()
 	return listener.Addr().(*net.TCPAddr).Port, nil
+}
+
+func reserveLocalPortInRange(portMin, portMax int) (int, error) {
+	if portMin == portMax {
+		listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", portMin))
+		if err != nil {
+			return 0, err
+		}
+		defer listener.Close()
+		return portMin, nil
+	}
+
+	width := portMax - portMin + 1
+	start := portMin + rand.Intn(width)
+	for offset := range width {
+		port := portMin + ((start - portMin + offset) % width)
+		listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err != nil {
+			continue
+		}
+		listener.Close()
+		return port, nil
+	}
+	return 0, fmt.Errorf("no free runtime port available in range %d-%d", portMin, portMax)
+}
+
+func parseRuntimePortRange(raw string) (int, int, bool, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, 0, false, nil
+	}
+	parts := strings.Split(raw, "-")
+	if len(parts) > 2 {
+		return 0, 0, false, fmt.Errorf("invalid runtime port range %q", raw)
+	}
+
+	parsePort := func(value string) (int, error) {
+		port, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil {
+			return 0, fmt.Errorf("invalid runtime port %q", value)
+		}
+		if port < 1 || port > 65535 {
+			return 0, fmt.Errorf("runtime port %d out of range", port)
+		}
+		return port, nil
+	}
+
+	portMin, err := parsePort(parts[0])
+	if err != nil {
+		return 0, 0, false, err
+	}
+	portMax := portMin
+	if len(parts) == 2 {
+		portMax, err = parsePort(parts[1])
+		if err != nil {
+			return 0, 0, false, err
+		}
+	}
+	if portMax < portMin {
+		return 0, 0, false, fmt.Errorf("runtime port range %q is inverted", raw)
+	}
+	return portMin, portMax, true, nil
 }
 
 func waitForHealth(ctx context.Context, health func(context.Context) error, processDone <-chan error) error {
