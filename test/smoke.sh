@@ -74,6 +74,20 @@ require_output() {
   fi
 }
 
+require_absent() {
+  local haystack="$1"
+  local needle="$2"
+  local label="$3"
+  if [[ "$haystack" == *"$needle"* ]]; then
+    printf '  ✗ %s\n' "$label"
+    printf '    expected not to find: %s\n' "$needle"
+    printf '    in output:\n%s\n' "$haystack"
+    exit 1
+  else
+    printf '  ✓ %s\n' "$label"
+  fi
+}
+
 wait_for_http() {
   local url="$1"
   timeout 60 bash -c 'until curl -sf "$1" >/dev/null; do :; done' _ "$url"
@@ -206,9 +220,9 @@ HOME_HTML="$(curl -sf "http://localhost:$PORT/")"
 require_output "$HOME_HTML" '<div id="root"></div>' "GET / serves the embedded manager SPA shell"
 require_output "$HOME_HTML" '/assets/' "GET / includes built web assets"
 
-WS_LANGUAGE_HTML="$(curl -sf "http://localhost:$PORT/ws-language")"
-require_output "$WS_LANGUAGE_HTML" '<div id="root"></div>' "GET /ws-language serves the embedded SPA shell"
-require_output "$WS_LANGUAGE_HTML" '/assets/' "GET /ws-language includes built web assets"
+ABOUT_HTML="$(curl -sf "http://localhost:$PORT/about")"
+require_output "$ABOUT_HTML" '<div id="root"></div>' "GET /about serves the embedded SPA shell"
+require_output "$ABOUT_HTML" '/assets/' "GET /about includes built web assets"
 
 APP_HTML="$(curl -sf "http://localhost:$PORT/app/$MANAGER_NAMESPACE/$WORKSPACE_NAME/$TOPIC_NAME")"
 require_output "$APP_HTML" '<div id="root"></div>' "GET /app/{ns}/{workspace}/{topic} serves the embedded SPA shell"
@@ -218,17 +232,19 @@ if command -v chromium >/dev/null 2>&1; then
   HOME_DOM="$(chromium --headless --disable-gpu --virtual-time-budget=4000 --dump-dom "http://localhost:$PORT/" 2>/dev/null)"
   require_output "$HOME_DOM" "Create Workspace" "headless Chromium renders the create workspace UI"
   require_output "$HOME_DOM" "Current participant:" "headless Chromium renders participant naming controls"
-  require_output "$HOME_DOM" "WS Language" "headless Chromium renders the ws language link"
+  require_output "$HOME_DOM" "About" "headless Chromium renders the about link"
   require_output "$HOME_DOM" "Delete Workspace" "headless Chromium renders a per-workspace card with workspace deletion"
   require_output "$HOME_DOM" "Create Topic" "headless Chromium renders a dedicated topic-creation control"
   require_output "$HOME_DOM" "Shelley UI" "headless Chromium renders topic-level Shelley UI links"
   require_output "$HOME_DOM" "Current participant:" "headless Chromium renders the saved participant name"
-  WS_LANGUAGE_DOM="$(chromium --headless --disable-gpu --virtual-time-budget=4000 --dump-dom "http://localhost:$PORT/ws-language" 2>/dev/null)"
-  require_output "$WS_LANGUAGE_DOM" "WS Language Tutorial" "headless Chromium renders the predictable-model tutorial"
-  require_output "$WS_LANGUAGE_DOM" "Queueing Trick" "headless Chromium renders the queueing tutorial"
+  ABOUT_DOM="$(chromium --headless --disable-gpu --virtual-time-budget=4000 --dump-dom "http://localhost:$PORT/about" 2>/dev/null)"
+  require_output "$ABOUT_DOM" "About This Demo" "headless Chromium renders the about page"
+  require_output "$ABOUT_DOM" "Things To Try" "headless Chromium renders the demo guidance"
   APP_DOM="$(chromium --headless --disable-gpu --virtual-time-budget=4000 --dump-dom "http://localhost:$PORT/app/$MANAGER_NAMESPACE/$WORKSPACE_NAME/$TOPIC_NAME" 2>/dev/null)"
-  require_output "$APP_DOM" "WS Reference" "topic web UI renders the tutorial link in the browser"
+  require_output "$APP_DOM" "About" "topic web UI renders the about link in the browser"
   require_output "$APP_DOM" "Open in Shelley" "topic web UI renders the Shelley UI link in the browser"
+  require_output "$APP_DOM" "Open in CLI" "topic web UI renders the CLI link in the browser"
+  require_absent "$APP_DOM" "WS Reference" "topic web UI no longer renders the old ws reference action"
   require_output "$APP_DOM" "Send" "topic web UI renders the prompt composer in the browser"
 fi
 

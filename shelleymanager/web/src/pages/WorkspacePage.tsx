@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useParams, useLocation } from "wouter";
 import { useStore } from "@/store";
+import { AboutLink } from "@/components/AboutLink";
 import { ParticipantNameInput } from "@/components/ParticipantNameInput";
 import type { WorkspaceDetail } from "@/api/types";
 import * as api from "@/api/client";
@@ -98,6 +99,7 @@ export function WorkspacePage() {
             <span style={{ fontSize: 13, fontWeight: 500 }}>{workspace}</span>
           </div>
           <div className="row" style={{ gap: 6 }}>
+            <AboutLink />
             <ParticipantNameInput compact />
             {ws && (
               <>

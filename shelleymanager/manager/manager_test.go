@@ -1409,14 +1409,14 @@ func TestManagerUIRoutes(t *testing.T) {
 		t.Fatalf("expected home page title in body, got %s", homeBody)
 	}
 
-	guideRes, err := http.Get(server.URL + "/ws-language")
+	guideRes, err := http.Get(server.URL + "/about")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer guideRes.Body.Close()
 	guideBody, _ := io.ReadAll(guideRes.Body)
 	if !strings.Contains(string(guideBody), `<div id="root"></div>`) || !strings.Contains(string(guideBody), `/assets/`) {
-		t.Fatalf("unexpected ws language guide body: %s", guideBody)
+		t.Fatalf("unexpected about page body: %s", guideBody)
 	}
 
 	createReq, err := http.NewRequest(http.MethodPost, server.URL+"/apis/v1/namespaces/acme/workspaces", strings.NewReader(`{"name":"bp-ig-fix","topics":[{"name":"bp-example-validator"}]}`))

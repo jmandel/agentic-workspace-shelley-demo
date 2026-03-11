@@ -4,7 +4,7 @@ import { Router, Route, Switch } from "wouter";
 import { HomePage } from "@/pages/HomePage";
 import { WorkspacePage } from "@/pages/WorkspacePage";
 import { TopicPage } from "@/pages/TopicPage";
-import { TutorialPage } from "@/pages/TutorialPage";
+import { AboutPage } from "@/pages/AboutPage";
 import "@/index.css";
 
 function App() {
@@ -20,7 +20,7 @@ function App() {
           path="/app/:namespace/:workspace"
           component={WorkspacePage}
         />
-        <Route path="/ws-language" component={TutorialPage} />
+        <Route path="/about" component={AboutPage} />
         <Route>
           <div className="page">
             <div className="card">

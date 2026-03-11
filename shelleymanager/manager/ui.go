@@ -15,7 +15,7 @@ func (m *Manager) handleHome(w http.ResponseWriter, r *http.Request) {
 	webassets.ServeIndex(w, r)
 }
 
-func (m *Manager) handleWSLanguage(w http.ResponseWriter, r *http.Request) {
+func (m *Manager) handleAbout(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return

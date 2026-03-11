@@ -1,6 +1,6 @@
 import { useEffect } from "react";
-import { Link } from "wouter";
 import { useStore } from "@/store";
+import { AboutLink } from "@/components/AboutLink";
 import { ParticipantNameInput } from "@/components/ParticipantNameInput";
 import { CreateWorkspaceForm } from "@/components/CreateWorkspaceForm";
 import { WorkspaceCard } from "@/components/WorkspaceCard";
@@ -34,9 +34,7 @@ export function HomePage() {
           <h1 style={{ margin: 0 }}>Workspace Manager</h1>
           <div className="row" style={{ gap: 6 }}>
             <ParticipantNameInput compact />
-            <Link href="/ws-language" className="btn btn-secondary btn-sm">
-              WS Language
-            </Link>
+            <AboutLink />
           </div>
         </div>
       </div>

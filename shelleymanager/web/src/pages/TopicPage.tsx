@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { Link, useParams, useLocation } from "wouter";
 import { useStore } from "@/store";
+import { AboutLink } from "@/components/AboutLink";
 import { MessageList } from "@/components/MessageList";
 import { QueuePanel } from "@/components/QueuePanel";
 import { ParticipantNameInput } from "@/components/ParticipantNameInput";
@@ -283,6 +284,7 @@ export function TopicPage() {
             <span className="topic-breadcrumb-current">{topic}</span>
           </div>
           <div className="row" style={{ gap: 6 }}>
+            <AboutLink />
             <span
               className="status-dot"
               data-status={connectionStatus}
@@ -303,9 +305,6 @@ export function TopicPage() {
             <section className="topic-control-block">
               <div className="topic-toolbar-label">Topic Actions</div>
               <div className="row" style={{ gap: 6 }}>
-                <Link href="/ws-language" className="btn btn-secondary btn-sm">
-                  WS Reference
-                </Link>
                 {shelleyHref && (
                   <a
                     href={shelleyHref}

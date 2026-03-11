@@ -175,8 +175,8 @@ func (m *Manager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/":
 		m.handleHome(w, r)
-	case r.URL.Path == "/ws-language":
-		m.handleWSLanguage(w, r)
+	case r.URL.Path == "/about":
+		m.handleAbout(w, r)
 	case strings.HasPrefix(r.URL.Path, "/app/"):
 		m.handleApp(w, r)
 	case strings.HasPrefix(r.URL.Path, "/assets/"):
