@@ -304,16 +304,6 @@ export function TopicPage() {
             <section className="topic-control-block">
               <div className="topic-toolbar-label">Topic Actions</div>
               <div className="row" style={{ gap: 6 }}>
-                {shelleyHref && (
-                  <a
-                    href={shelleyHref}
-                    className="btn btn-secondary btn-sm"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    Open in Shelley
-                  </a>
-                )}
                 <a
                   href={workspaceFilesPageHref(namespace, workspace)}
                   className="btn btn-secondary btn-sm"
@@ -329,6 +319,16 @@ export function TopicPage() {
                 >
                   Open in CLI
                 </button>
+                {shelleyHref && (
+                  <a
+                    href={shelleyHref}
+                    className="btn btn-secondary btn-sm"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Open in Shelley
+                  </a>
+                )}
                 <button
                   className="btn btn-danger btn-sm"
                   onClick={handleDeleteTopic}
