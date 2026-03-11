@@ -148,11 +148,11 @@ type runtimeTopicInfo struct {
 }
 
 type runtimeTopicState struct {
-	Name      string              `json:"name"`
-	ActiveRun *runtimeTopicRun    `json:"activeRun,omitempty"`
-	Queue     []runtimeTopicRun   `json:"queue,omitempty"`
-	CreatedAt string              `json:"createdAt,omitempty"`
-	Events    string              `json:"events,omitempty"`
+	Name      string            `json:"name"`
+	ActiveRun *runtimeTopicRun  `json:"activeRun,omitempty"`
+	Queue     []runtimeTopicRun `json:"queue,omitempty"`
+	CreatedAt string            `json:"createdAt,omitempty"`
+	Events    string            `json:"events,omitempty"`
 }
 
 type runtimeTopicRun struct {
@@ -278,17 +278,54 @@ func (m *Manager) handleHealth(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
 	m.mu.RLock()
-	count := len(m.workspaces)
+	workspaces := make([]*Workspace, 0, len(m.workspaces))
+	for _, ws := range m.workspaces {
+		workspaces = append(workspaces, ws)
+	}
 	m.mu.RUnlock()
+
+	slices.SortFunc(workspaces, func(left, right *Workspace) int {
+		if left.Namespace != right.Namespace {
+			return strings.Compare(left.Namespace, right.Namespace)
+		}
+		return strings.Compare(left.Name, right.Name)
+	})
+
+	shelleyRuntimes := make([]runtimeVersionInfo, 0, len(workspaces))
+	for _, ws := range workspaces {
+		runtimeInfo := runtimeVersionInfo{
+			Namespace: ws.Namespace,
+			Workspace: ws.Name,
+			Mode:      ws.Runtime.Mode,
+		}
+		if ws.Runtime.APIBase != nil {
+			runtimeInfo.APIBase = ws.Runtime.APIBase.String()
+		}
+
+		versionCtx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
+		version, err := fetchShelleyVersion(versionCtx, ws.Runtime.APIBase)
+		cancel()
+		if err != nil {
+			runtimeInfo.VersionError = err.Error()
+		} else {
+			runtimeInfo.Version = version
+		}
+
+		shelleyRuntimes = append(shelleyRuntimes, runtimeInfo)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":      "ok",
-		"workspaces":  count,
-		"namespace":   m.defaultNamespace,
-		"launcher":    m.launcher.Name(),
-		"mode":        "shelleymanager",
-		"runtimePath": "/ws/*",
-		"localTools":  localToolInfos(m.localTools),
+		"status":          "ok",
+		"workspaces":      len(workspaces),
+		"namespace":       m.defaultNamespace,
+		"launcher":        m.launcher.Name(),
+		"mode":            "shelleymanager",
+		"runtimePath":     "/ws/*",
+		"localTools":      localToolInfos(m.localTools),
+		"manager":         managerBuildInfo(),
+		"shelleyRuntimes": shelleyRuntimes,
 	})
 }
 

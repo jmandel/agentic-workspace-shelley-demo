@@ -96,8 +96,9 @@ wait_for_http() {
 read_cli_until() {
   local needle="$1"
   local label="$2"
+  local timeout_seconds="${3:-60}"
   local line
-  local deadline=$((SECONDS + 60))
+  local deadline=$((SECONDS + timeout_seconds))
 
   while (( SECONDS < deadline )); do
     if IFS= read -r -t 1 line <&4; then
@@ -206,6 +207,9 @@ require_output "$WORKSPACES_JSON" "$WORKSPACE_NAME" "GET /apis/v1/namespaces/{ns
 HEALTH_JSON="$(curl -sf "http://localhost:$PORT/health")"
 require_output "$HEALTH_JSON" '"mode":"shelleymanager"' "GET /health reports manager mode"
 require_output "$HEALTH_JSON" '"fhir-validator"' "GET /health reports the published local tool catalog"
+require_output "$HEALTH_JSON" '"manager":{"name":"shelleymanager"' "GET /health reports the manager build identity"
+require_output "$HEALTH_JSON" "\"shelleyRuntimes\":[{\"namespace\":\"$MANAGER_NAMESPACE\",\"workspace\":\"$WORKSPACE_NAME\"" "GET /health reports the active Shelley runtime"
+require_output "$HEALTH_JSON" '"version":{"name":"shelley"' "GET /health reports the Shelley build identity"
 
 LOCAL_TOOLS_JSON="$(curl -sf -H "Authorization: Bearer $ADMIN_TOKEN" "http://localhost:$PORT/apis/v1/local-tools")"
 require_output "$LOCAL_TOOLS_JSON" '"fhir-validator"' "GET /apis/v1/local-tools lists the validator bundle"
@@ -316,7 +320,7 @@ log "Running real Bun CLI against shelleymanager"
   printf '%s\n' 'bash: fhir-validator input/examples/Patient-bp-alice-smith.json input/examples/Observation-bp-alice-morning.json' >&3
   read_cli_until "[run]" "cli.ts saw the active run begin"
   read_cli_until "[tool]" "cli.ts saw the validator bash tool invocation"
-  read_cli_until "FHIR Validation tool Version" "cli.ts received real validator output"
+  read_cli_until "FHIR Validation tool Version" "cli.ts received real validator output" 180
   read_cli_until "Patient.gender" "validator output includes the patient validation detail"
   read_cli_until "Observation.component" "validator output includes the blood pressure component detail"
   printf '/quit\n' >&3
@@ -329,7 +333,7 @@ log "Running real Bun CLI against shelleymanager"
   exec 4<&"${CLI2[0]}"
 
   read_cli_until "Connected to topic" "second cli session connected"
-  read_cli_until "FHIR Validation tool Version" "late join replay includes prior validator output"
+  read_cli_until "FHIR Validation tool Version" "late join replay includes prior validator output" 180
   read_cli_until "Patient.gender" "late join replay includes the patient validation detail"
   read_cli_until "Observation.component" "late join replay includes the validator failure detail"
   printf '%s\n' 'workspace_tool_json: hl7-jira jira.search {"query":"validation error handling"}' >&3

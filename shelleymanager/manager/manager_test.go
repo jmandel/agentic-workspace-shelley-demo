@@ -1288,6 +1288,98 @@ func TestManagerPatchWorkspaceLocalTools(t *testing.T) {
 	}
 }
 
+func TestManagerHealthReportsManagerAndShelleyVersions(t *testing.T) {
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ws/health":
+			io.WriteString(w, `{"status":"ok"}`)
+		case "/version":
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"version":"0.10.0","tag":"v0.10.0","commit":"abc123","commit_time":"2026-03-11T20:00:00Z","modified":false}`)
+		case "/ws/topics":
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `[]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer runtime.Close()
+	runtimeURL, _ := url.Parse(runtime.URL)
+
+	launcher := &fakeLauncher{
+		baseDir: t.TempDir(),
+		runtime: &Runtime{
+			Name:    "demo",
+			APIBase: runtimeURL,
+			Mode:    "fake",
+			Health:  func(context.Context) error { return nil },
+			Stop:    func(context.Context) error { return nil },
+		},
+	}
+	mgr, err := New(Config{DefaultNamespace: "acme", Launcher: launcher})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(mgr)
+	defer server.Close()
+
+	createReq, err := http.NewRequest(http.MethodPost, server.URL+"/apis/v1/namespaces/acme/workspaces", strings.NewReader(`{"name":"demo"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	createReq.Header.Set("Content-Type", "application/json")
+	setManagerAuth(t, createReq, "alice@example.com")
+	createRes, err := http.DefaultClient.Do(createReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createRes.Body.Close()
+	if createRes.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d", createRes.StatusCode)
+	}
+
+	res, err := http.Get(server.URL + "/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("health status = %d", res.StatusCode)
+	}
+
+	var health struct {
+		Status          string               `json:"status"`
+		Manager         buildInfo            `json:"manager"`
+		ShelleyRuntimes []runtimeVersionInfo `json:"shelleyRuntimes"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&health); err != nil {
+		t.Fatal(err)
+	}
+
+	if health.Status != "ok" {
+		t.Fatalf("unexpected health status %q", health.Status)
+	}
+	if health.Manager.Name != "shelleymanager" {
+		t.Fatalf("unexpected manager health block %+v", health.Manager)
+	}
+	if len(health.ShelleyRuntimes) != 1 {
+		t.Fatalf("expected one Shelley runtime, got %+v", health.ShelleyRuntimes)
+	}
+	runtimeHealth := health.ShelleyRuntimes[0]
+	if runtimeHealth.Namespace != "acme" || runtimeHealth.Workspace != "demo" {
+		t.Fatalf("unexpected Shelley runtime block %+v", runtimeHealth)
+	}
+	if runtimeHealth.Version == nil {
+		t.Fatalf("expected Shelley version block, got %+v", runtimeHealth)
+	}
+	if runtimeHealth.Version.Name != "shelley" || runtimeHealth.Version.Commit != "abc123" {
+		t.Fatalf("unexpected Shelley version %+v", runtimeHealth.Version)
+	}
+	if runtimeHealth.VersionError != "" {
+		t.Fatalf("unexpected Shelley version error %q", runtimeHealth.VersionError)
+	}
+}
+
 func TestManagerRecoverWorkspacesIgnoresOtherNamespaces(t *testing.T) {
 	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/ws/health" {
