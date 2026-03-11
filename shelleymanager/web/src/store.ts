@@ -4,10 +4,15 @@ import type {
   WorkspaceDetail,
   QueueSnapshot,
   QueueEntry,
+  TopicMessage,
   ManagerEvent,
 } from "@/api/types";
 import * as api from "@/api/client";
-import { loadClientIdentity, socketAuthenticationMessage, updateClientDisplayName } from "@/api/auth";
+import { loadClientIdentity, updateClientDisplayName } from "@/api/auth";
+import { connectAuthenticatedSocket } from "@/api/socket";
+
+const EVENTS_RECONNECT_DELAY_MS = 3000;
+const TOPIC_RECONNECT_DELAY_MS = 1500;
 
 // ---------------------------------------------------------------------------
 // Chat message (accumulated from WebSocket events)
@@ -228,131 +233,101 @@ export const useStore = create<AppState>((set, get) => ({
     const prev = get()._eventsWs;
     if (prev) prev.close();
 
-    set({ eventsStatus: "connecting" });
-
     const url = api.eventsWSURL(namespace);
-    const ws = new WebSocket(url);
-    set({ _eventsWs: ws });
-
-    const isActive = () => get()._eventsWs === ws;
-
-    ws.onopen = () => {
-      if (!isActive()) return;
-      ws.send(socketAuthenticationMessage());
-    };
-
-    ws.onclose = () => {
-      if (!isActive()) return;
-      set({ eventsStatus: "disconnected", _eventsWs: null });
-      // Auto-reconnect after delay.
-      setTimeout(() => {
-        if (get()._eventsWs === null && get().namespaceLoaded) {
-          get().connectManagerEvents(get().namespace);
-        }
-      }, 3000);
-    };
-
-    ws.onerror = () => {
-      // onclose will fire next and handle reconnection.
-    };
-
-    ws.onmessage = (event: MessageEvent) => {
-      if (!isActive()) return;
-      const msg = JSON.parse(event.data as string) as ManagerEvent;
-
-      if (msg.type === "authenticated") {
-        return;
-      }
-
-      // Handle connected first — its replay field means "replay follows",
-      // not that this message itself is a replay event.
-      if (msg.type === "connected") {
-        set({ eventsStatus: "connected" });
+    connectAuthenticatedSocket<ManagerEvent>({
+      url,
+      reconnectDelayMs: EVENTS_RECONNECT_DELAY_MS,
+      getActiveSocket: () => get()._eventsWs,
+      setActiveSocket: (ws) => set({ _eventsWs: ws }),
+      setStatus: (eventsStatus) => set({ eventsStatus }),
+      shouldReconnect: () => get().namespaceLoaded,
+      reconnect: () => get().connectManagerEvents(get().namespace),
+      onConnected: () => {
         get().fetchWorkspaces();
-        return;
-      }
-
+      },
+      onMessage: (msg) => {
       // Skip replay events — we already fetched the full list above.
-      if (msg.replay) return;
+        if (msg.replay) return;
 
-      const wsName = typeof msg.workspace === "string"
-        ? msg.workspace
-        : msg.workspace?.name;
-      const topicName = typeof msg.topic === "string"
-        ? msg.topic
-        : msg.topic?.name;
+        const wsName = typeof msg.workspace === "string"
+          ? msg.workspace
+          : msg.workspace?.name;
+        const topicName = typeof msg.topic === "string"
+          ? msg.topic
+          : msg.topic?.name;
 
-      switch (msg.type) {
-        case "workspace_created": {
-          if (!wsName) break;
-          const exists = get().workspaces.some((w) => w.name === wsName);
-          if (!exists) {
+        switch (msg.type) {
+          case "workspace_created": {
+            if (!wsName) break;
+            const exists = get().workspaces.some((w) => w.name === wsName);
+            if (!exists) {
+              const wsObj = typeof msg.workspace === "object" ? msg.workspace : undefined;
+              const stub: WorkspaceDetail = {
+                name: wsName,
+                status: wsObj?.status ?? "running",
+                createdAt: wsObj?.createdAt,
+                topics: wsObj?.topics?.map((t) => ({ name: t.name })),
+              };
+              set((state) => ({ workspaces: [...state.workspaces, stub] }));
+            }
+            // Fetch full detail (has runtime info, etc.).
+            get().fetchWorkspaceDetail(wsName).catch(() => {});
+            break;
+          }
+
+          case "workspace_deleted":
+            if (wsName) {
+              set((state) => ({
+                workspaces: state.workspaces.filter((w) => w.name !== wsName),
+              }));
+            }
+            break;
+
+          case "workspace_status_changed": {
+            if (!wsName) break;
             const wsObj = typeof msg.workspace === "object" ? msg.workspace : undefined;
-            const stub: WorkspaceDetail = {
-              name: wsName,
-              status: wsObj?.status ?? "running",
-              createdAt: wsObj?.createdAt,
-              topics: wsObj?.topics?.map((t) => ({ name: t.name })),
-            };
-            set((state) => ({ workspaces: [...state.workspaces, stub] }));
+            const status = wsObj?.status;
+            if (status) {
+              set((state) => ({
+                workspaces: state.workspaces.map((w) =>
+                  w.name === wsName ? { ...w, status } : w,
+                ),
+              }));
+            }
+            break;
           }
-          // Fetch full detail (has runtime info, etc.).
-          get().fetchWorkspaceDetail(wsName).catch(() => {});
-          break;
+
+          case "topic_created":
+            if (wsName && topicName) {
+              set((state) => ({
+                workspaces: state.workspaces.map((w) =>
+                  w.name === wsName
+                    ? {
+                        ...w,
+                        topics: w.topics?.some((t) => t.name === topicName)
+                          ? w.topics
+                          : [...(w.topics ?? []), { name: topicName }],
+                      }
+                    : w,
+                ),
+              }));
+            }
+            break;
+
+          case "topic_deleted":
+            if (wsName && topicName) {
+              set((state) => ({
+                workspaces: state.workspaces.map((w) =>
+                  w.name === wsName
+                    ? { ...w, topics: w.topics?.filter((t) => t.name !== topicName) }
+                    : w,
+                ),
+              }));
+            }
+            break;
         }
-
-        case "workspace_deleted":
-          if (wsName) {
-            set((state) => ({
-              workspaces: state.workspaces.filter((w) => w.name !== wsName),
-            }));
-          }
-          break;
-
-        case "workspace_status_changed": {
-          if (!wsName) break;
-          const wsObj = typeof msg.workspace === "object" ? msg.workspace : undefined;
-          const status = wsObj?.status;
-          if (status) {
-            set((state) => ({
-              workspaces: state.workspaces.map((w) =>
-                w.name === wsName ? { ...w, status } : w,
-              ),
-            }));
-          }
-          break;
-        }
-
-        case "topic_created":
-          if (wsName && topicName) {
-            set((state) => ({
-              workspaces: state.workspaces.map((w) =>
-                w.name === wsName
-                  ? {
-                      ...w,
-                      topics: w.topics?.some((t) => t.name === topicName)
-                        ? w.topics
-                        : [...(w.topics ?? []), { name: topicName }],
-                    }
-                  : w,
-              ),
-            }));
-          }
-          break;
-
-        case "topic_deleted":
-          if (wsName && topicName) {
-            set((state) => ({
-              workspaces: state.workspaces.map((w) =>
-                w.name === wsName
-                  ? { ...w, topics: w.topics?.filter((t) => t.name !== topicName) }
-                  : w,
-              ),
-            }));
-          }
-          break;
-      }
-    };
+      },
+    });
   },
 
   disconnectManagerEvents: () => {
@@ -389,43 +364,25 @@ export const useStore = create<AppState>((set, get) => ({
     });
 
     const url = api.topicWSURL(namespace, workspace, topic);
-    const ws = new WebSocket(url);
-    set({ _ws: ws });
-
-    // Guard: only mutate state if this ws is still the active connection.
-    // React StrictMode re-runs effects (mount/unmount/mount), so a stale
-    // socket's onclose can fire after a new socket has been created.
-    const isActive = () => get()._ws === ws;
-
-    ws.onopen = () => {
-      if (!isActive()) return;
-      ws.send(socketAuthenticationMessage());
-    };
-
-    ws.onclose = () => {
-      if (!isActive()) return;
-      set({ connectionStatus: "disconnected", _ws: null });
-    };
-
-    ws.onerror = () => {
-      if (!isActive()) return;
-      if (ws.readyState !== WebSocket.OPEN) {
-        set({ connectionStatus: "disconnected" });
-      }
-    };
-
-    ws.onmessage = (event: MessageEvent) => {
-      if (!isActive()) return;
-      const { pushMessage } = get();
-      const msg = JSON.parse(event.data as string);
-
-      switch (msg.type) {
-        case "authenticated":
-          break;
-        case "connected":
-          set({ connectionStatus: "connected" });
-          get().refreshQueue();
-          break;
+    connectAuthenticatedSocket<TopicMessage>({
+      url,
+      reconnectDelayMs: TOPIC_RECONNECT_DELAY_MS,
+      getActiveSocket: () => get()._ws,
+      setActiveSocket: (_ws) => set({ _ws }),
+      setStatus: (connectionStatus) => set({ connectionStatus }),
+      shouldReconnect: () => {
+        const current = get().topicConnection;
+        return current?.namespace === namespace &&
+          current?.workspace === workspace &&
+          current?.topic === topic;
+      },
+      reconnect: () => get().connectTopic(namespace, workspace, topic),
+      onConnected: () => {
+        get().refreshQueue();
+      },
+      onMessage: (msg) => {
+        const { pushMessage } = get();
+        switch (msg.type) {
         case "prompt_status":
           if (msg.status === "started") set({ turnActive: true });
           if (msg.status === "completed" || msg.status === "failed" || msg.status === "cancelled") {
@@ -518,8 +475,9 @@ export const useStore = create<AppState>((set, get) => ({
         default:
           // Unknown event types — ignore silently
           break;
-      }
-    };
+        }
+      },
+    });
   },
 
   disconnectTopic: () => {
