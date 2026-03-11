@@ -1,5 +1,15 @@
 # Workspace Notes
 
+## Pulling With Submodules
+- For this repo, do not assume `git pull` alone leaves submodules correct.
+- Safe update sequence:
+  - `git pull --ff-only`
+  - `git submodule update --init --recursive`
+- After pulling, verify the parent repo and submodules agree:
+  - `git submodule status`
+  - `git ls-tree HEAD agentic-workspace shelley`
+- If `git status` shows `M agentic-workspace` or `M shelley`, the submodule worktrees do not match the superproject's pinned commits yet.
+
 ## Scope
 This repository is a scratch workspace for evaluating how `shelley` might interoperate with the Agentic Workspace Protocol.
 
