@@ -28,7 +28,7 @@ export function WorkspaceCard({ workspace: ws }: Props) {
     if (!name || busy) return;
     setBusy(true);
     try {
-      await createTopic(ws.name, name);
+      await createTopic(ns, ws.name, name);
       setNewTopic("");
     } finally {
       setBusy(false);
@@ -37,12 +37,12 @@ export function WorkspaceCard({ workspace: ws }: Props) {
 
   const handleDeleteTopic = async (topicName: string) => {
     if (!confirm(`Delete topic "${topicName}"?`)) return;
-    await deleteTopic(ws.name, topicName);
+    await deleteTopic(ns, ws.name, topicName);
   };
 
   const handleDeleteWorkspace = async () => {
     if (!confirm(`Delete workspace "${ws.name}"?`)) return;
-    await deleteWorkspace(ws.name);
+    await deleteWorkspace(ns, ws.name);
   };
 
   return (

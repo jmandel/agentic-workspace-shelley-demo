@@ -115,10 +115,25 @@ type workspaceDetail struct {
 	Runtime *workspaceRuntimeInfo `json:"runtime,omitempty"`
 }
 
+type workspaceSubjectRef struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"displayName,omitempty"`
+}
+
+type workspaceTopicRun struct {
+	RunID         string               `json:"runId"`
+	State         string               `json:"state"`
+	Interruptible bool                 `json:"interruptible,omitempty"`
+	SubmittedBy   *workspaceSubjectRef `json:"submittedBy,omitempty"`
+}
+
 type workspaceTopicRef struct {
-	Name    string `json:"name"`
-	Events  string `json:"events,omitempty"`
-	Shelley string `json:"shelley,omitempty"`
+	Name        string             `json:"name"`
+	ActiveRun   *workspaceTopicRun `json:"activeRun,omitempty"`
+	QueuedCount int                `json:"queuedCount,omitempty"`
+	CreatedAt   string             `json:"createdAt,omitempty"`
+	Events      string             `json:"events,omitempty"`
+	Shelley     string             `json:"shelley,omitempty"`
 }
 
 type workspaceRuntimeInfo struct {
@@ -126,7 +141,30 @@ type workspaceRuntimeInfo struct {
 }
 
 type runtimeTopicInfo struct {
-	Name string `json:"name"`
+	Name        string             `json:"name"`
+	ActiveRun   *workspaceTopicRun `json:"activeRun,omitempty"`
+	QueuedCount int                `json:"queuedCount,omitempty"`
+	CreatedAt   string             `json:"createdAt,omitempty"`
+}
+
+type runtimeTopicState struct {
+	Name      string              `json:"name"`
+	ActiveRun *runtimeTopicRun    `json:"activeRun,omitempty"`
+	Queue     []runtimeTopicRun   `json:"queue,omitempty"`
+	CreatedAt string              `json:"createdAt,omitempty"`
+	Events    string              `json:"events,omitempty"`
+}
+
+type runtimeTopicRun struct {
+	RunID         string               `json:"runId"`
+	State         string               `json:"state"`
+	Text          string               `json:"text,omitempty"`
+	CreatedAt     string               `json:"createdAt,omitempty"`
+	Position      int                  `json:"position,omitempty"`
+	Reason        string               `json:"reason,omitempty"`
+	Interruptible bool                 `json:"interruptible,omitempty"`
+	SubmittedBy   *workspaceSubjectRef `json:"submittedBy,omitempty"`
+	InterruptedBy *workspaceSubjectRef `json:"interruptedBy,omitempty"`
 }
 
 func New(cfg Config) (*Manager, error) {
@@ -332,8 +370,16 @@ func (m *Manager) handleNamespaced(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Intercept topic create/delete to emit lifecycle events (RFC 0009).
+	if len(parts) == 7 && parts[6] == "topics" && r.Method == http.MethodGet {
+		m.writeSpecTopicList(w, r, ws)
+		return
+	}
 	if len(parts) == 7 && parts[6] == "topics" && r.Method == http.MethodPost {
 		m.createTopicDirect(w, r, ws, namespace)
+		return
+	}
+	if len(parts) == 8 && parts[6] == "topics" && r.Method == http.MethodGet {
+		m.writeSpecTopicState(w, r, ws, parts[7])
 		return
 	}
 	if len(parts) == 8 && parts[6] == "topics" && r.Method == http.MethodDelete {
@@ -638,6 +684,32 @@ func (m *Manager) writeSpecDetail(w http.ResponseWriter, r *http.Request, ws *Wo
 	writeJSON(w, http.StatusOK, m.specDetail(r, ws, nil))
 }
 
+func (m *Manager) writeSpecTopicList(w http.ResponseWriter, r *http.Request, ws *Workspace) {
+	runtimeTopics := m.runtimeTopics(r.Context(), ws)
+	resp := make([]workspaceTopicRef, 0, len(runtimeTopics))
+	for _, topic := range runtimeTopics {
+		resp = append(resp, m.specTopicRef(r, ws, topic))
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (m *Manager) writeSpecTopicState(w http.ResponseWriter, r *http.Request, ws *Workspace, topic string) {
+	topicState, status, err := m.runtimeTopicState(r.Context(), ws, topic)
+	if err != nil {
+		http.Error(w, "runtime unavailable", http.StatusBadGateway)
+		return
+	}
+	if status == http.StatusNotFound {
+		http.NotFound(w, r)
+		return
+	}
+	if status != http.StatusOK {
+		http.Error(w, "runtime unavailable", http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, http.StatusOK, m.specTopicState(r, ws, topicState))
+}
+
 func (m *Manager) ensureTopics(ctx context.Context, ws *Workspace, topics []string) error {
 	for _, topic := range topics {
 		body, _ := json.Marshal(map[string]string{"name": topic})
@@ -680,21 +752,22 @@ func (m *Manager) createTopicDirect(w http.ResponseWriter, r *http.Request, ws *
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
-	copyHeaders(w.Header(), resp.Header)
-	w.WriteHeader(resp.StatusCode)
-	w.Write(respBody)
 
 	if resp.StatusCode == http.StatusCreated {
-		var created struct {
-			Name string `json:"name"`
-		}
+		var created runtimeTopicInfo
 		if json.Unmarshal(respBody, &created) == nil && created.Name != "" {
+			writeJSON(w, http.StatusCreated, m.specTopicRef(r, ws, created))
 			m.events.emit(namespace, "topic_created", map[string]any{
 				"workspace": ws.Name,
 				"topic":     map[string]any{"name": created.Name},
 			})
+			return
 		}
 	}
+
+	copyHeaders(w.Header(), resp.Header)
+	w.WriteHeader(resp.StatusCode)
+	w.Write(respBody)
 }
 
 func (m *Manager) deleteTopicDirect(w http.ResponseWriter, r *http.Request, ws *Workspace, namespace, topicName string) {
@@ -754,6 +827,53 @@ func (m *Manager) runtimeTopics(ctx context.Context, ws *Workspace) []runtimeTop
 		return strings.Compare(a.Name, b.Name)
 	})
 	return topics
+}
+
+func (m *Manager) runtimeTopicState(ctx context.Context, ws *Workspace, topic string) (runtimeTopicState, int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ws.Runtime.APIBase.String()+"/ws/topics/"+url.PathEscape(topic), nil)
+	if err != nil {
+		return runtimeTopicState{}, 0, err
+	}
+	applyWorkspaceRuntimeIdentity(req, ctx)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return runtimeTopicState{}, 0, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, res.Body)
+		return runtimeTopicState{}, res.StatusCode, nil
+	}
+	var topicState runtimeTopicState
+	if err := json.NewDecoder(res.Body).Decode(&topicState); err != nil {
+		return runtimeTopicState{}, 0, err
+	}
+	return topicState, res.StatusCode, nil
+}
+
+func copyTopicRun(run *workspaceTopicRun) *workspaceTopicRun {
+	if run == nil {
+		return nil
+	}
+	clone := *run
+	return &clone
+}
+
+func (m *Manager) specTopicRef(r *http.Request, ws *Workspace, topic runtimeTopicInfo) workspaceTopicRef {
+	return workspaceTopicRef{
+		Name:        topic.Name,
+		ActiveRun:   copyTopicRun(topic.ActiveRun),
+		QueuedCount: topic.QueuedCount,
+		CreatedAt:   topic.CreatedAt,
+		Events:      m.specTopicEventsURL(r, ws, topic.Name),
+		Shelley:     m.specShelleyURL(r, ws, topic.Name),
+	}
+}
+
+func (m *Manager) specTopicState(r *http.Request, ws *Workspace, topic runtimeTopicState) runtimeTopicState {
+	state := topic
+	state.Events = m.specTopicEventsURL(r, ws, topic.Name)
+	return state
 }
 
 func (m *Manager) proxyRuntime(w http.ResponseWriter, r *http.Request, ws *Workspace, runtimePath string) {
@@ -816,8 +936,17 @@ func (m *Manager) specSummary(r *http.Request, ws *Workspace) workspaceSummary {
 }
 
 func (m *Manager) specDetail(r *http.Request, ws *Workspace, topics []string) workspaceDetail {
+	topicInfos := m.runtimeTopics(r.Context(), ws)
+	activeRunByTopic := make(map[string]*workspaceTopicRun, len(topicInfos))
+	queuedCountByTopic := make(map[string]int, len(topicInfos))
+	for _, topic := range topicInfos {
+		if topic.ActiveRun != nil {
+			copy := *topic.ActiveRun
+			activeRunByTopic[topic.Name] = &copy
+		}
+		queuedCountByTopic[topic.Name] = topic.QueuedCount
+	}
 	if topics == nil {
-		topicInfos := m.runtimeTopics(r.Context(), ws)
 		topics = make([]string, 0, len(topicInfos))
 		for _, topic := range topicInfos {
 			topics = append(topics, topic.Name)
@@ -837,10 +966,20 @@ func (m *Manager) specDetail(r *http.Request, ws *Workspace, topics []string) wo
 		resp.Runtime = &workspaceRuntimeInfo{LocalTools: localToolInfos(ws.LocalTools)}
 	}
 	for _, topic := range topics {
+		createdAt := ""
+		for _, topicInfo := range topicInfos {
+			if topicInfo.Name == topic {
+				createdAt = topicInfo.CreatedAt
+				break
+			}
+		}
 		resp.Topics = append(resp.Topics, workspaceTopicRef{
-			Name:    topic,
-			Events:  m.specTopicEventsURL(r, ws, topic),
-			Shelley: m.specShelleyURL(r, ws, topic),
+			Name:        topic,
+			ActiveRun:   activeRunByTopic[topic],
+			QueuedCount: queuedCountByTopic[topic],
+			CreatedAt:   createdAt,
+			Events:      m.specTopicEventsURL(r, ws, topic),
+			Shelley:     m.specShelleyURL(r, ws, topic),
 		})
 	}
 	return resp
@@ -863,7 +1002,7 @@ func (m *Manager) specAPIBase(r *http.Request, ws *Workspace) string {
 }
 
 func (m *Manager) specTopicEventsURL(r *http.Request, ws *Workspace, topic string) string {
-	return m.specAPIBase(r, ws) + "/topics/" + url.PathEscape(topic) + "/events"
+	return requestBase(r, true) + "/apis/v1/namespaces/" + ws.Namespace + "/workspaces/" + ws.Name + "/topics/" + url.PathEscape(topic) + "/events"
 }
 
 func normalizeShelleyUIMode(raw string) string {

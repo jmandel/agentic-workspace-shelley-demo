@@ -4,8 +4,8 @@ import type {
   WorkspaceDetail,
   WorkspaceFileListing,
   WorkspaceFileNode,
-  QueueSnapshot,
-  QueueEntry,
+  TopicRun,
+  TopicState,
   TopicMessage,
   ManagerEvent,
 } from "@/api/types";
@@ -35,6 +35,7 @@ export interface ChatMessage {
   label: string;
   body: string;
   ts: number;
+  runId?: string;
 }
 
 let _msgSeq = 0;
@@ -106,9 +107,9 @@ interface AppState {
     name: string,
     namespaceOverride?: string,
   ) => Promise<WorkspaceDetail>;
-  deleteWorkspace: (name: string) => Promise<void>;
-  deleteTopic: (workspace: string, topic: string) => Promise<void>;
-  createTopic: (workspace: string, topic: string) => Promise<void>;
+  deleteWorkspace: (namespace: string, name: string) => Promise<void>;
+  deleteTopic: (namespace: string, workspace: string, topic: string) => Promise<void>;
+  createTopic: (namespace: string, workspace: string, topic: string) => Promise<void>;
 
   // --- Workspace file browsers ---
   fileBrowsers: Record<string, WorkspaceFileBrowserState>;
@@ -136,21 +137,22 @@ interface AppState {
     topic: string;
   } | null;
   connectionStatus: ConnectionStatus;
+  activeRun: TopicRun | null;
   turnActive: boolean;
   messages: ChatMessage[];
-  queue: QueueSnapshot;
+  queue: TopicRun[];
   _ws: WebSocket | null;
-  _promptCounter: number;
   _injectCounter: number;
+  _pendingPromptTexts: string[];
 
   connectTopic: (namespace: string, workspace: string, topic: string) => void;
   disconnectTopic: () => void;
-  sendPrompt: (text: string) => void;
+  sendPrompt: (text: string) => boolean;
   sendInject: (text: string) => void;
   sendInterrupt: () => void;
-  injectFromQueue: (promptId: string) => Promise<void>;
+  injectFromQueue: (runId: string) => Promise<void>;
   pushMessage: (kind: ChatMessage["kind"], label: string, body: string) => void;
-  refreshQueue: () => Promise<void>;
+  refreshTopicState: () => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -163,7 +165,7 @@ const initialIdentity = loadClientIdentity();
 // Empty queue sentinel
 // ---------------------------------------------------------------------------
 
-const EMPTY_QUEUE: QueueSnapshot = { activePromptId: "", entries: [] };
+const EMPTY_QUEUE: TopicRun[] = [];
 
 function emptyWorkspaceFileBrowser(
   namespace: string,
@@ -202,13 +204,76 @@ function updateWorkspaceFileBrowserMap(
   };
 }
 
-function normalizeQueue(
-  raw: Partial<QueueSnapshot> | undefined,
-): QueueSnapshot {
+function normalizeRun(raw: Partial<TopicRun> | undefined | null): TopicRun | null {
+  if (!raw?.runId || !raw.state) return null;
   return {
-    activePromptId: raw?.activePromptId ?? "",
-    entries: Array.isArray(raw?.entries) ? (raw.entries as QueueEntry[]) : [],
+    runId: raw.runId,
+    state: raw.state,
+    text: raw.text || undefined,
+    createdAt: raw.createdAt || undefined,
+    position: typeof raw.position === "number" ? raw.position : undefined,
+    reason: raw.reason || undefined,
+    interruptible: !!raw.interruptible,
+    submittedBy: raw.submittedBy,
+    interruptedBy: raw.interruptedBy,
   };
+}
+
+function normalizeTopicState(raw: Partial<TopicState> | undefined | null): TopicState {
+  return {
+    name: raw?.name || "",
+    activeRun: normalizeRun(raw?.activeRun) ?? undefined,
+    queue: Array.isArray(raw?.queue)
+      ? raw.queue.map((run) => normalizeRun(run)).filter((run): run is TopicRun => run !== null)
+      : [],
+    createdAt: raw?.createdAt || undefined,
+    events: raw?.events || undefined,
+  };
+}
+
+function deriveTurnActive(
+  activeRun: TopicRun | null | undefined,
+  pendingPromptTexts: string[],
+): boolean {
+  return !!activeRun || pendingPromptTexts.length > 0;
+}
+
+function consumePendingSubmission(
+  pendingPromptTexts: string[],
+  participantSubject: string,
+  msg: TopicMessage,
+): string[] {
+  if (
+    msg.submittedBy?.id !== participantSubject ||
+    pendingPromptTexts.length === 0 ||
+    (msg.state !== "queued" && msg.state !== "running")
+  ) {
+    return pendingPromptTexts;
+  }
+  return pendingPromptTexts.slice(1);
+}
+
+function reconcilePendingSubmissions(
+  pendingPromptTexts: string[],
+  participantSubject: string,
+  topicState: TopicState,
+): string[] {
+  if (pendingPromptTexts.length === 0) {
+    return pendingPromptTexts;
+  }
+  let visibleOwnRuns = 0;
+  if (topicState.activeRun?.submittedBy?.id === participantSubject) {
+    visibleOwnRuns++;
+  }
+  for (const run of topicState.queue) {
+    if (run.submittedBy?.id === participantSubject) {
+      visibleOwnRuns++;
+    }
+  }
+  if (visibleOwnRuns === 0) {
+    return pendingPromptTexts;
+  }
+  return pendingPromptTexts.slice(Math.min(visibleOwnRuns, pendingPromptTexts.length));
 }
 
 // ---------------------------------------------------------------------------
@@ -235,7 +300,9 @@ export const useStore = create<AppState>((set, get) => ({
       ? {
           messages: state.messages,
           queue: state.queue,
+          activeRun: state.activeRun,
           turnActive: state.turnActive,
+          _pendingPromptTexts: state._pendingPromptTexts,
         }
       : null;
 
@@ -356,29 +423,29 @@ export const useStore = create<AppState>((set, get) => ({
     }));
     return detail;
   },
-  deleteWorkspace: async (name: string) => {
-    const { namespace } = get();
+  deleteWorkspace: async (namespace: string, name: string) => {
     await api.deleteWorkspace(namespace, name);
     set((state) => ({
-      workspaces: state.workspaces.filter((ws) => ws.name !== name),
+      workspaces: state.workspaces.filter((ws) => {
+        const wsNamespace = ws.namespace || namespace;
+        return !(ws.name === name && wsNamespace === namespace);
+      }),
     }));
   },
-  deleteTopic: async (workspace: string, topic: string) => {
-    const { namespace } = get();
+  deleteTopic: async (namespace: string, workspace: string, topic: string) => {
     await api.deleteTopic(namespace, workspace, topic);
     set((state) => ({
       workspaces: state.workspaces.map((ws) =>
-        ws.name === workspace
+        (ws.namespace || namespace) === namespace && ws.name === workspace
           ? { ...ws, topics: ws.topics?.filter((t) => t.name !== topic) }
           : ws,
       ),
     }));
   },
-  createTopic: async (workspace: string, topic: string) => {
-    const { namespace } = get();
+  createTopic: async (namespace: string, workspace: string, topic: string) => {
     await api.createTopic(namespace, workspace, topic);
     // Refresh the workspace detail to get updated topics list
-    await get().fetchWorkspaceDetail(workspace);
+    await get().fetchWorkspaceDetail(workspace, namespace);
   },
 
   // --- Workspace file browsers ---
@@ -832,28 +899,27 @@ export const useStore = create<AppState>((set, get) => ({
   // --- Topic connection ---
   topicConnection: null,
   connectionStatus: "idle",
+  activeRun: null,
   turnActive: false,
   messages: [],
   queue: EMPTY_QUEUE,
   _ws: null,
-  _promptCounter: 0,
   _injectCounter: 0,
+  _pendingPromptTexts: [],
 
   connectTopic: (namespace: string, workspace: string, topic: string) => {
-    // Close any existing connection
     const prev = get()._ws;
-    if (prev) {
-      prev.close();
-    }
+    if (prev) prev.close();
 
     set({
       topicConnection: { namespace, workspace, topic },
       connectionStatus: "connecting",
+      activeRun: null,
       turnActive: false,
       messages: [],
       queue: EMPTY_QUEUE,
-      _promptCounter: 0,
       _injectCounter: 0,
+      _pendingPromptTexts: [],
     });
 
     const url = api.topicWSURL(namespace, workspace, topic);
@@ -873,49 +939,81 @@ export const useStore = create<AppState>((set, get) => ({
       },
       reconnect: () => get().connectTopic(namespace, workspace, topic),
       onConnected: () => {
-        get().refreshQueue();
+        void get().refreshTopicState();
       },
       onMessage: (msg) => {
         const { pushMessage } = get();
         switch (msg.type) {
-          case "prompt_status":
-            if (msg.status === "started") set({ turnActive: true });
-            if (
-              msg.status === "completed" ||
-              msg.status === "failed" ||
-              msg.status === "cancelled"
-            ) {
-              set({ turnActive: false });
-            }
-            get().refreshQueue();
-            break;
-          case "queue_snapshot": {
-            const q = normalizeQueue(msg);
-            set({ queue: q, turnActive: !!msg.activePromptId });
+          case "topic_state": {
+            const topicState = normalizeTopicState(msg);
+            set((state) => {
+              const pendingPromptTexts = reconcilePendingSubmissions(
+                state._pendingPromptTexts,
+                state.participantSubject,
+                topicState,
+              );
+              return {
+                activeRun: topicState.activeRun ?? null,
+                queue: topicState.queue,
+                _pendingPromptTexts: pendingPromptTexts,
+                turnActive: deriveTurnActive(topicState.activeRun, pendingPromptTexts),
+              };
+            });
             break;
           }
-          case "queue_entry_updated":
-          case "queue_entry_moved":
-          case "queue_entry_removed":
-          case "queue_cleared":
-            get().refreshQueue();
+          case "run_updated":
+            set((state) => {
+              const pendingPromptTexts = consumePendingSubmission(
+                state._pendingPromptTexts,
+                state.participantSubject,
+                msg,
+              );
+              return {
+                _pendingPromptTexts: pendingPromptTexts,
+                turnActive: deriveTurnActive(state.activeRun, pendingPromptTexts),
+              };
+            });
+
+            if (
+              msg.state === "cancelled" &&
+              msg.reason &&
+              msg.reason !== "cancelled_by_submitter"
+            ) {
+              const who =
+                msg.interruptedBy?.displayName ??
+                msg.interruptedBy?.id ??
+                "someone";
+              pushMessage(
+                "interrupted",
+                "Interrupted",
+                `${who}: ${msg.reason}`,
+              );
+            }
             break;
-          case "user":
-            pushMessage(
-              "user",
-              msg.submittedBy?.displayName ?? msg.submittedBy?.id ?? "User",
-              msg.data ?? "",
-            );
-            break;
-          case "text":
-            // Append to the last assistant message if streaming, otherwise create new
+          case "message":
+            if (msg.role === "user") {
+              pushMessage(
+                "user",
+                msg.submittedBy?.displayName ?? msg.submittedBy?.id ?? "User",
+                msg.text ?? "",
+              );
+              break;
+            }
+            if (msg.role !== "assistant") {
+              break;
+            }
             set((state) => {
               const last = state.messages[state.messages.length - 1];
-              if (last?.kind === "assistant") {
+              const runId = msg.runId || undefined;
+              if (
+                runId &&
+                last?.kind === "assistant" &&
+                last.runId === runId
+              ) {
                 return {
                   messages: [
                     ...state.messages.slice(0, -1),
-                    { ...last, body: last.body + (msg.data ?? "") },
+                    { ...last, body: last.body + (msg.text ?? "") },
                   ],
                 };
               }
@@ -926,8 +1024,9 @@ export const useStore = create<AppState>((set, get) => ({
                     id: msgId(),
                     kind: "assistant" as const,
                     label: "Shelley",
-                    body: msg.data ?? "",
+                    body: msg.text ?? "",
                     ts: Date.now(),
+                    runId,
                   },
                 ],
               };
@@ -938,14 +1037,13 @@ export const useStore = create<AppState>((set, get) => ({
             if (msg.rawInput) {
               try {
                 const input = msg.rawInput;
-                // For bash-like tools, show the command directly
                 if (typeof input.command === "string") {
                   toolBody = input.command;
                 } else {
                   toolBody = JSON.stringify(input);
                 }
               } catch {
-                /* fall back to status */
+                // Keep default status text.
               }
             }
             pushMessage("tool", msg.title ?? msg.tool ?? "Tool", toolBody);
@@ -958,40 +1056,28 @@ export const useStore = create<AppState>((set, get) => ({
               `${msg.title ?? msg.tool ?? ""} · ${msg.status ?? ""}${msg.data ? `\n\n${msg.data}` : ""}`,
             );
             break;
-          case "system":
-            // System events (e.g. "thinking...") are reflected by turnActive state
-            break;
           case "error":
             pushMessage("error", "Error", msg.data ?? "Unknown error");
             break;
-          case "done":
-            if (msg.status === "interrupted") {
-              const who =
-                msg.interruptedBy?.displayName ??
-                msg.interruptedBy?.id ??
-                "someone";
-              pushMessage(
-                "interrupted",
-                "Interrupted",
-                msg.reason ? `${who}: ${msg.reason}` : `Stopped by ${who}`,
-              );
-            }
-            // Normal turn completion is reflected by turnActive state
-            set({ turnActive: false });
-            get().refreshQueue();
-            break;
           case "inject_status":
-            // Inject failures surface as errors; success is silent
             if (msg.status === "rejected") {
               pushMessage(
                 "error",
                 "Inject",
-                `Injection rejected (no active turn)`,
+                `Injection rejected${msg.reason ? ` (${msg.reason})` : ""}`,
+              );
+            }
+            break;
+          case "interrupt_status":
+            if (msg.status !== "accepted") {
+              pushMessage(
+                "error",
+                "Interrupt",
+                msg.reason || "Interrupt rejected",
               );
             }
             break;
           default:
-            // Unknown event types — ignore silently
             break;
         }
       },
@@ -1004,24 +1090,30 @@ export const useStore = create<AppState>((set, get) => ({
     set({
       topicConnection: null,
       connectionStatus: "idle",
+      activeRun: null,
       turnActive: false,
       messages: [],
       queue: EMPTY_QUEUE,
       _ws: null,
+      _pendingPromptTexts: [],
     });
   },
 
   sendPrompt: (text: string) => {
-    const ws = get()._ws;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    const counter = get()._promptCounter + 1;
-    set({ _promptCounter: counter });
+    const state = get();
+    const ws = state._ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    set({
+      _pendingPromptTexts: [...state._pendingPromptTexts, text],
+      turnActive: deriveTurnActive(state.activeRun, [...state._pendingPromptTexts, text]),
+    });
     ws.send(
       JSON.stringify({
         type: "prompt",
         data: text,
       }),
     );
+    return true;
   },
 
   sendInject: (text: string) => {
@@ -1048,24 +1140,21 @@ export const useStore = create<AppState>((set, get) => ({
     );
   },
 
-  injectFromQueue: async (promptId: string) => {
+  injectFromQueue: async (runId: string) => {
     const conn = get().topicConnection;
     if (!conn) return;
-    // Find the entry text before cancelling
-    const entry = get().queue.entries.find((e) => e.promptId === promptId);
+    const entry = get().queue.find((run) => run.runId === runId);
     const text = entry?.text ?? "";
-    // Cancel the queue entry
-    await api.cancelQueuedPrompt(
+    await api.cancelQueuedRun(
       conn.namespace,
       conn.workspace,
       conn.topic,
-      promptId,
+      runId,
     );
-    // Inject its text into the active turn
     if (text) {
       get().sendInject(text);
     }
-    get().refreshQueue();
+    void get().refreshTopicState();
   },
 
   pushMessage: (kind, label, body) => {
@@ -1077,19 +1166,22 @@ export const useStore = create<AppState>((set, get) => ({
     }));
   },
 
-  refreshQueue: async () => {
+  refreshTopicState: async () => {
     const conn = get().topicConnection;
     if (!conn) return;
     try {
-      const snapshot = await api.fetchQueue(
+      const topicState = normalizeTopicState(await api.fetchTopicState(
         conn.namespace,
         conn.workspace,
         conn.topic,
-      );
-      const q = normalizeQueue(snapshot);
-      set({ queue: q, turnActive: !!snapshot?.activePromptId });
+      ));
+      set((state) => ({
+        activeRun: topicState.activeRun ?? null,
+        queue: topicState.queue,
+        turnActive: deriveTurnActive(topicState.activeRun, state._pendingPromptTexts),
+      }));
     } catch {
-      // Queue refresh failures are non-fatal
+      // Topic refresh failures are non-fatal.
     }
   },
 }));

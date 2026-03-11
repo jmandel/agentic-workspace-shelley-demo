@@ -118,7 +118,7 @@ func TestManagerCreateAndProxyRoutes(t *testing.T) {
 			w.WriteHeader(http.StatusNoContent)
 		case r.URL.Path == "/ws/topics":
 			w.Header().Set("Content-Type", "application/json")
-			io.WriteString(w, `[{"name":"general","clients":0,"busy":false,"createdAt":"2026-03-10T00:00:00Z"}]`)
+			io.WriteString(w, `[{"name":"general","clients":0,"queuedCount":0,"createdAt":"2026-03-10T00:00:00Z"}]`)
 		case r.URL.Path == "/ws/files" && r.Method == http.MethodGet:
 			w.Header().Set("Content-Type", "application/json")
 			io.WriteString(w, `{"node":{"path":"docs","name":"docs","kind":"directory","size":0,"modifiedAt":"2026-03-10T00:00:00Z"},"entries":[]}`)
@@ -174,6 +174,9 @@ func TestManagerCreateAndProxyRoutes(t *testing.T) {
 	}
 	if created.Name != "demo" || created.API == "" {
 		t.Fatalf("unexpected create response: %+v", created)
+	}
+	if len(created.Topics) != 1 || created.Topics[0].ActiveRun != nil || created.Topics[0].QueuedCount != 0 {
+		t.Fatalf("expected create response to include idle topic summary, got %+v", created.Topics)
 	}
 
 	topicsReq, err := http.NewRequest(http.MethodGet, server.URL+"/apis/v1/namespaces/acme/workspaces/demo/topics", nil)

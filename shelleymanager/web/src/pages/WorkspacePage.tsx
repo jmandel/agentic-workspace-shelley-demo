@@ -41,13 +41,13 @@ export function WorkspacePage() {
 
   const handleDeleteWorkspace = async () => {
     if (!confirm(`Delete workspace "${workspace}"?`)) return;
-    await useStore.getState().deleteWorkspace(workspace);
+    await useStore.getState().deleteWorkspace(namespace, workspace);
     navigate("/");
   };
 
   const handleDeleteTopic = async (topicName: string) => {
     if (!confirm(`Delete topic "${topicName}"?`)) return;
-    await deleteTopic(workspace, topicName);
+    await deleteTopic(namespace, workspace, topicName);
   };
 
   const handleCreateTopic = async () => {
@@ -55,7 +55,7 @@ export function WorkspacePage() {
     if (!name || busy) return;
     setBusy(true);
     try {
-      await createTopic(workspace, name);
+      await createTopic(namespace, workspace, name);
       setNewTopic("");
     } finally {
       setBusy(false);

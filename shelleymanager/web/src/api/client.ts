@@ -5,7 +5,7 @@ import type {
   WorkspaceFileListing,
   CreateWorkspaceRequest,
   PatchWorkspaceRequest,
-  QueueSnapshot,
+  TopicState,
   RegisterToolRequest,
   GrantRequest,
 } from "./types";
@@ -165,52 +165,52 @@ export async function deleteTopic(
   );
 }
 
-// --- Queue ---
-
-export async function fetchQueue(
+export async function fetchTopicState(
   namespace: string,
   workspace: string,
   topic: string,
-): Promise<QueueSnapshot> {
-  return request<QueueSnapshot>(
-    `${workspaceBase(namespace, workspace)}/topics/${encodeURIComponent(topic)}/queue`,
+): Promise<TopicState> {
+  return request<TopicState>(
+    `${workspaceBase(namespace, workspace)}/topics/${encodeURIComponent(topic)}`,
   );
 }
 
-export async function cancelQueuedPrompt(
+// --- Queue ---
+
+export async function cancelQueuedRun(
   namespace: string,
   workspace: string,
   topic: string,
-  promptId: string,
+  runId: string,
 ): Promise<void> {
   await request<unknown>(
-    `${workspaceBase(namespace, workspace)}/topics/${encodeURIComponent(topic)}/queue/${encodeURIComponent(promptId)}`,
+    `${workspaceBase(namespace, workspace)}/topics/${encodeURIComponent(topic)}/queue/${encodeURIComponent(runId)}`,
     { method: "DELETE" },
   );
 }
 
-export async function updateQueuedPrompt(
+export async function updateQueuedRun(
   namespace: string,
   workspace: string,
   topic: string,
-  promptId: string,
+  runId: string,
   text: string,
-): Promise<QueueSnapshot> {
-  return request<QueueSnapshot>(
-    `${workspaceBase(namespace, workspace)}/topics/${encodeURIComponent(topic)}/queue/${encodeURIComponent(promptId)}`,
+): Promise<TopicState> {
+  return request<TopicState>(
+    `${workspaceBase(namespace, workspace)}/topics/${encodeURIComponent(topic)}/queue/${encodeURIComponent(runId)}`,
     { method: "PATCH", body: JSON.stringify({ data: text }) },
   );
 }
 
-export async function moveQueuedPrompt(
+export async function moveQueuedRun(
   namespace: string,
   workspace: string,
   topic: string,
-  promptId: string,
+  runId: string,
   direction: "up" | "down" | "top" | "bottom",
-): Promise<QueueSnapshot> {
-  return request<QueueSnapshot>(
-    `${workspaceBase(namespace, workspace)}/topics/${encodeURIComponent(topic)}/queue/${encodeURIComponent(promptId)}/move`,
+): Promise<TopicState> {
+  return request<TopicState>(
+    `${workspaceBase(namespace, workspace)}/topics/${encodeURIComponent(topic)}/queue/${encodeURIComponent(runId)}/move`,
     { method: "POST", body: JSON.stringify({ direction }) },
   );
 }

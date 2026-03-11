@@ -189,6 +189,7 @@ export function TopicPage() {
   const [, navigate] = useLocation();
 
   const connectionStatus = useStore((s) => s.connectionStatus);
+  const activeRun = useStore((s) => s.activeRun);
   const turnActive = useStore((s) => s.turnActive);
   const messages = useStore((s) => s.messages);
   const queue = useStore((s) => s.queue);
@@ -211,11 +212,14 @@ export function TopicPage() {
     void fetchWorkspaceDetail(workspace, namespace);
   }, [fetchWorkspaceDetail, namespace, workspace]);
 
+  const canSubmit =
+    connectionStatus === "connected" && !!prompt.trim();
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const text = prompt.trim();
-    if (!text || connectionStatus !== "connected") return;
-    sendPrompt(text);
+    if (!text || !canSubmit) return;
+    if (!sendPrompt(text)) return;
     setPrompt("");
     textareaRef.current?.focus();
   };
@@ -348,16 +352,18 @@ export function TopicPage() {
           <span className="muted" style={{ fontSize: 13 }}>
             <span
               className="status-dot"
-              data-status="running"
+              data-status={activeRun ? "running" : "connecting"}
               style={{ marginRight: 6 }}
             />
-            Agent is working
-            {queue.activePromptId ? ` (${queue.activePromptId})` : ""}
+            {activeRun ? "Agent is working" : "Submitting prompt..."}
+            {activeRun?.runId ? ` (${activeRun.runId})` : ""}
           </span>
           <button
             className="btn-stop btn-sm"
             onClick={sendInterrupt}
-            disabled={connectionStatus !== "connected"}
+            disabled={
+              connectionStatus !== "connected" || !activeRun?.interruptible
+            }
           >
             Stop
           </button>
@@ -365,7 +371,7 @@ export function TopicPage() {
       )}
 
       {/* Queue (only shown when entries exist) */}
-      {queue.entries.length > 0 && (
+      {queue.length > 0 && (
         <div className="card" style={{ flexShrink: 0 }}>
           <QueuePanel />
         </div>
@@ -391,7 +397,7 @@ export function TopicPage() {
             <button
               className="btn btn-primary"
               type="submit"
-              disabled={connectionStatus !== "connected" || !prompt.trim()}
+              disabled={!canSubmit}
             >
               Send
             </button>

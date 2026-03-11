@@ -1,48 +1,48 @@
 import { useState } from "react";
 import { useStore } from "@/store";
-import type { QueueEntry } from "@/api/types";
+import type { TopicRun } from "@/api/types";
 import * as api from "@/api/client";
 
 export function QueuePanel() {
   const conn = useStore((s) => s.topicConnection);
   const participantSubject = useStore((s) => s.participantSubject);
   const queue = useStore((s) => s.queue);
-  const turnActive = useStore((s) => s.turnActive);
+  const activeRun = useStore((s) => s.activeRun);
   const connectionStatus = useStore((s) => s.connectionStatus);
 
-  if (!conn || queue.entries.length === 0) return null;
+  if (!conn || queue.length === 0) return null;
 
   const { namespace, workspace, topic } = conn;
-  const queuedCount = queue.entries.length;
+  const queuedCount = queue.length;
   const connected = connectionStatus === "connected";
 
   return (
     <div>
       <div className="row row-between" style={{ marginBottom: 6 }}>
         <h3 style={{ margin: 0 }}>
-          Prompt Queue{" "}
+          Run Queue{" "}
           <span className="muted" style={{ fontWeight: 400, fontSize: 12 }}>
             {queuedCount} pending
           </span>
         </h3>
       </div>
-      {queue.activePromptId && (
+      {activeRun && (
         <div className="queue-active">
           <span className="muted" style={{ fontSize: 12 }}>
-            Active prompt {queue.activePromptId}
+            Active run {activeRun.runId}
           </span>
         </div>
       )}
 
       <div className="stack-sm">
-        {queue.entries.map((entry) => (
+        {queue.map((entry) => (
           <QueueEntryCard
-            key={entry.promptId}
+            key={entry.runId}
             entry={entry}
             isOwn={entry.submittedBy?.id === participantSubject}
             isFirst={entry.position === 1}
             isLast={entry.position === queuedCount}
-            turnActive={turnActive}
+            turnRunning={activeRun !== null}
             connected={connected}
             namespace={namespace}
             workspace={workspace}
@@ -59,25 +59,25 @@ function QueueEntryCard({
   isOwn,
   isFirst,
   isLast,
-  turnActive,
+  turnRunning,
   connected,
   namespace,
   workspace,
   topic,
 }: {
-  entry: QueueEntry;
+  entry: TopicRun;
   isOwn: boolean;
   isFirst: boolean;
   isLast: boolean;
-  turnActive: boolean;
+  turnRunning: boolean;
   connected: boolean;
   namespace: string;
   workspace: string;
   topic: string;
 }) {
-  const refreshQueue = useStore((s) => s.refreshQueue);
+  const refreshTopicState = useStore((s) => s.refreshTopicState);
   const injectFromQueue = useStore((s) => s.injectFromQueue);
-  const [editText, setEditText] = useState(entry.text);
+  const [editText, setEditText] = useState(entry.text ?? "");
   const [saving, setSaving] = useState(false);
   const owner = entry.submittedBy?.displayName ?? entry.submittedBy?.id ?? "unknown";
 
@@ -85,36 +85,36 @@ function QueueEntryCard({
     if (saving || !editText.trim()) return;
     setSaving(true);
     try {
-      await api.updateQueuedPrompt(
-        namespace, workspace, topic, entry.promptId, editText.trim(),
+      await api.updateQueuedRun(
+        namespace, workspace, topic, entry.runId, editText.trim(),
       );
-      refreshQueue();
+      void refreshTopicState();
     } finally {
       setSaving(false);
     }
   };
 
   const move = async (direction: "up" | "down" | "top" | "bottom") => {
-    await api.moveQueuedPrompt(
-      namespace, workspace, topic, entry.promptId, direction,
+    await api.moveQueuedRun(
+      namespace, workspace, topic, entry.runId, direction,
     );
-    refreshQueue();
+    void refreshTopicState();
   };
 
   const cancel = async () => {
-    await api.cancelQueuedPrompt(
-      namespace, workspace, topic, entry.promptId,
+    await api.cancelQueuedRun(
+      namespace, workspace, topic, entry.runId,
     );
-    refreshQueue();
+    void refreshTopicState();
   };
 
   return (
     <div className={`queue-entry ${isOwn ? "queue-entry-own" : ""}`}>
       <div className="row row-between" style={{ marginBottom: 4 }}>
         <span className="muted" style={{ fontSize: 11 }}>
-          #{entry.position} {entry.status} by {owner}
+          #{entry.position} {entry.state} by {owner}
         </span>
-        <span className="mono muted">{entry.promptId}</span>
+        <span className="mono muted">{entry.runId}</span>
       </div>
       <textarea
         value={editText}
@@ -122,10 +122,10 @@ function QueueEntryCard({
         style={{ minHeight: 48, fontSize: 12 }}
       />
       <div className="row row-end" style={{ marginTop: 4 }}>
-        {turnActive && (
+        {turnRunning && (
         <button
           className="btn btn-primary btn-sm"
-          onClick={() => injectFromQueue(entry.promptId)}
+          onClick={() => injectFromQueue(entry.runId)}
           disabled={!isOwn || !connected}
           title="Cancel this entry and inject its text into the active turn"
         >

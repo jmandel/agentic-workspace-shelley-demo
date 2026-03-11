@@ -27,8 +27,28 @@ export interface WorkspaceSummary {
   createdAt?: string;
 }
 
+export interface TopicActor {
+  id: string;
+  displayName?: string;
+}
+
+export interface TopicRun {
+  runId: string;
+  state: "queued" | "running" | "completed" | "cancelled" | "failed";
+  text?: string;
+  createdAt?: string;
+  position?: number;
+  reason?: string;
+  interruptible?: boolean;
+  submittedBy?: TopicActor;
+  interruptedBy?: TopicActor;
+}
+
 export interface WorkspaceTopicRef {
   name: string;
+  activeRun?: TopicRun;
+  queuedCount?: number;
+  createdAt?: string;
   events?: string;
   shelley?: string;
 }
@@ -76,28 +96,17 @@ export interface PatchWorkspaceRequest {
 export interface TopicInfo {
   name: string;
   clients?: number;
-  busy?: boolean;
+  activeRun?: TopicRun;
+  queuedCount?: number;
   createdAt?: string;
 }
 
-// --- Queue types ---
-
-export interface QueueSubmitter {
-  id: string;
-  displayName?: string;
-}
-
-export interface QueueEntry {
-  promptId: string;
-  text: string;
-  status: string;
-  position?: number;
-  submittedBy?: QueueSubmitter;
-}
-
-export interface QueueSnapshot {
-  activePromptId: string;
-  entries: QueueEntry[];
+export interface TopicState {
+  name: string;
+  activeRun?: TopicRun;
+  queue: TopicRun[];
+  createdAt?: string;
+  events?: string;
 }
 
 // --- WebSocket message types ---
@@ -105,43 +114,44 @@ export interface QueueSnapshot {
 export type TopicMessageType =
   | "authenticated"
   | "connected"
-  | "prompt_status"
-  | "queue_snapshot"
-  | "queue_entry_updated"
-  | "queue_entry_moved"
-  | "queue_entry_removed"
-  | "queue_cleared"
-  | "user"
-  | "text"
+  | "topic_state"
+  | "run_updated"
+  | "message"
   | "tool_call"
   | "tool_update"
-  | "system"
+  | "approval_request"
   | "error"
-  | "done"
-  | "inject_status";
+  | "inject_status"
+  | "interrupt_status";
 
 export interface TopicMessage {
   type: TopicMessageType;
-  actor?: QueueSubmitter;
+  replay?: boolean;
+  eventId?: string;
+  timestamp?: string;
+  actor?: TopicActor;
   data?: string;
-  promptId?: string;
+  text?: string;
+  role?: "user" | "assistant";
+  runId?: string;
+  state?: TopicRun["state"] | "accepted" | "rejected";
   status?: string;
   position?: number;
   title?: string;
   tool?: string;
   toolCallId?: string;
   kind?: string;
-  submittedBy?: QueueSubmitter;
-  // queue_snapshot fields
-  activePromptId?: string;
-  entries?: QueueEntry[];
-  // tool_call raw input (ACP-aligned)
+  submittedBy?: TopicActor;
+  interruptedBy?: TopicActor;
+  activeRun?: TopicRun;
+  queue?: TopicRun[];
   rawInput?: Record<string, unknown>;
-  // inject/interrupt fields (RFC 0007)
   injectId?: string;
-  injected?: boolean;
   reason?: string;
-  interruptedBy?: QueueSubmitter;
+  approvers?: string[];
+  action?: string;
+  approved?: boolean;
+  approver?: string;
 }
 
 // --- Manager lifecycle event types (RFC 0009) ---
@@ -157,7 +167,7 @@ export type ManagerEventType =
 
 export interface ManagerEvent {
   type: ManagerEventType;
-  actor?: QueueSubmitter;
+  actor?: TopicActor;
   eventId?: string;
   timestamp?: string;
   replay?: boolean;

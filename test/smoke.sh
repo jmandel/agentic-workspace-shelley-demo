@@ -231,12 +231,12 @@ require_output "$APP_HTML" '/assets/' "GET /app/{ns}/{workspace}/{topic} include
 if command -v chromium >/dev/null 2>&1; then
   HOME_DOM="$(chromium --headless --disable-gpu --virtual-time-budget=4000 --dump-dom "http://localhost:$PORT/" 2>/dev/null)"
   require_output "$HOME_DOM" "Create Workspace" "headless Chromium renders the create workspace UI"
-  require_output "$HOME_DOM" "Current participant:" "headless Chromium renders participant naming controls"
+  require_output "$HOME_DOM" 'aria-label="Open settings"' "headless Chromium renders participant settings controls"
   require_output "$HOME_DOM" "About" "headless Chromium renders the about link"
   require_output "$HOME_DOM" "Delete Workspace" "headless Chromium renders a per-workspace card with workspace deletion"
   require_output "$HOME_DOM" "Create Topic" "headless Chromium renders a dedicated topic-creation control"
   require_output "$HOME_DOM" "Shelley UI" "headless Chromium renders topic-level Shelley UI links"
-  require_output "$HOME_DOM" "Current participant:" "headless Chromium renders the saved participant name"
+  require_output "$HOME_DOM" 'title="Settings"' "headless Chromium renders the saved participant settings trigger"
   ABOUT_DOM="$(chromium --headless --disable-gpu --virtual-time-budget=4000 --dump-dom "http://localhost:$PORT/about" 2>/dev/null)"
   require_output "$ABOUT_DOM" "About This Demo" "headless Chromium renders the about page"
   require_output "$ABOUT_DOM" "Things To Try" "headless Chromium renders the demo guidance"
@@ -314,7 +314,7 @@ log "Running real Bun CLI against shelleymanager"
 
   read_cli_until "Connected to topic" "cli.ts connected via canonical manager discovery"
   printf '%s\n' 'bash: fhir-validator input/examples/Patient-bp-alice-smith.json input/examples/Observation-bp-alice-morning.json' >&3
-  read_cli_until "thinking..." "cli.ts saw live workspace system update"
+  read_cli_until "[run]" "cli.ts saw the active run begin"
   read_cli_until "[tool]" "cli.ts saw the validator bash tool invocation"
   read_cli_until "FHIR Validation tool Version" "cli.ts received real validator output"
   read_cli_until "Patient.gender" "validator output includes the patient validation detail"
@@ -354,6 +354,7 @@ log "Running real Bun CLI against shelleymanager"
 log "Checking topic listing through manager routes"
 TOPICS_JSON="$(curl -sf -H "Authorization: Bearer $ADMIN_TOKEN" "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/topics")"
 require_output "$TOPICS_JSON" "$TOPIC_NAME" "proxied GET /topics lists the connected topic"
+require_output "$TOPICS_JSON" '"events":"ws://' "GET /topics returns canonical topic event URLs"
 
 CLI_TOPICS_OUTPUT="$(
   cd "$AW_DIR"
@@ -361,12 +362,13 @@ CLI_TOPICS_OUTPUT="$(
 )"
 require_output "$CLI_TOPICS_OUTPUT" "$TOPIC_NAME" "cli.ts topics lists the connected topic"
 
-log "Checking prompt queueing through the public manager routes"
+log "Checking run queueing through the public manager routes"
 QUEUE_WS_OUTPUT="$(
   bun -e '
     const ws = new WebSocket("ws://127.0.0.1:'"$PORT"'/apis/v1/namespaces/'"$MANAGER_NAMESPACE"'/workspaces/'"$WORKSPACE_NAME"'/topics/'"$TOPIC_NAME"'/events");
     const ids = {};
     const seen = [];
+    let activeStateSeen = false;
     ws.onopen = () => {
       ws.send(JSON.stringify({ type: "authenticate", token: "'"$QUEUE_TOKEN"'" }));
     };
@@ -377,21 +379,27 @@ QUEUE_WS_OUTPUT="$(
         return;
       }
       if (msg.type === "connected") {
-      ws.send(JSON.stringify({ type: "prompt", data: "ws validator \"input/examples/Patient-bp-alice-smith.json input/examples/Observation-bp-alice-morning.json\" toolpause3 aftertext \"validator finished\"" }));
-      ws.send(JSON.stringify({ type: "prompt", data: "ws text \"smoke queue second\"" }));
-      ws.send(JSON.stringify({ type: "prompt", data: "ws text \"smoke queue third\"" }));
+        ws.send(JSON.stringify({ type: "prompt", data: "ws validator \"input/examples/Patient-bp-alice-smith.json input/examples/Observation-bp-alice-morning.json\" toolpause3 aftertext \"validator finished\"" }));
+        ws.send(JSON.stringify({ type: "prompt", data: "ws text \"smoke queue second\"" }));
+        ws.send(JSON.stringify({ type: "prompt", data: "ws text \"smoke queue third\"" }));
         return;
       }
-      if (msg.type === "prompt_status" && msg.status === "accepted" && msg.data === "ws validator \"input/examples/Patient-bp-alice-smith.json input/examples/Observation-bp-alice-morning.json\" toolpause3 aftertext \"validator finished\"") {
-        ids.first = msg.promptId;
+      if (msg.type === "run_updated" && msg.text === "ws validator \"input/examples/Patient-bp-alice-smith.json input/examples/Observation-bp-alice-morning.json\" toolpause3 aftertext \"validator finished\"") {
+        ids.first = msg.runId;
       }
-      if (msg.type === "prompt_status" && msg.status === "accepted" && msg.data === "ws text \"smoke queue second\"") {
-        ids.second = msg.promptId;
+      if (msg.type === "run_updated" && msg.text === "ws text \"smoke queue second\"") {
+        ids.second = msg.runId;
       }
-      if (msg.type === "prompt_status" && msg.status === "accepted" && msg.data === "ws text \"smoke queue third\"") {
-        ids.third = msg.promptId;
+      if (msg.type === "run_updated" && msg.text === "ws text \"smoke queue third\"") {
+        ids.third = msg.runId;
       }
-      if (msg.type === "prompt_status" && msg.promptId === ids.third && msg.status === "queued") {
+      if (msg.type === "topic_state" && msg.activeRun && ids.first && msg.activeRun.runId === ids.first) {
+        const queueIds = Array.isArray(msg.queue) ? msg.queue.map((entry) => entry.runId) : [];
+        if (queueIds.includes(ids.second) && queueIds.includes(ids.third)) {
+          activeStateSeen = true;
+        }
+      }
+      if (ids.first && ids.second && ids.third && activeStateSeen) {
         console.log(JSON.stringify({ ids, seen }));
         process.exit(0);
       }
@@ -399,69 +407,72 @@ QUEUE_WS_OUTPUT="$(
     setTimeout(() => {
       console.log(JSON.stringify({ ids, seen }));
       process.exit(2);
-    }, 4000);
+    }, 6000);
   '
 )"
-QUEUE_FIRST_PROMPT_ID="$(printf '%s' "$QUEUE_WS_OUTPUT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["ids"]["first"])')"
-QUEUE_SECOND_PROMPT_ID="$(printf '%s' "$QUEUE_WS_OUTPUT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["ids"]["second"])')"
-QUEUE_THIRD_PROMPT_ID="$(printf '%s' "$QUEUE_WS_OUTPUT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["ids"]["third"])')"
-require_output "$QUEUE_WS_OUTPUT" "\"promptId\":\"$QUEUE_SECOND_PROMPT_ID\"" "topic websocket emits a prompt id for the queued prompt"
-require_output "$QUEUE_WS_OUTPUT" "\"promptId\":\"$QUEUE_THIRD_PROMPT_ID\"" "topic websocket emits a prompt id for the third queued prompt"
-require_output "$QUEUE_WS_OUTPUT" '"status":"queued"' "later prompts are explicitly queued while the first turn is active"
+QUEUE_FIRST_RUN_ID="$(printf '%s' "$QUEUE_WS_OUTPUT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["ids"]["first"])')"
+QUEUE_SECOND_RUN_ID="$(printf '%s' "$QUEUE_WS_OUTPUT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["ids"]["second"])')"
+QUEUE_THIRD_RUN_ID="$(printf '%s' "$QUEUE_WS_OUTPUT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["ids"]["third"])')"
+require_output "$QUEUE_WS_OUTPUT" "\"runId\":\"$QUEUE_FIRST_RUN_ID\"" "topic websocket emits a run id for the active run"
+require_output "$QUEUE_WS_OUTPUT" "\"runId\":\"$QUEUE_SECOND_RUN_ID\"" "topic websocket emits a run id for the second queued run"
+require_output "$QUEUE_WS_OUTPUT" "\"runId\":\"$QUEUE_THIRD_RUN_ID\"" "topic websocket emits a run id for the third queued run"
+require_output "$QUEUE_WS_OUTPUT" '"type":"run_updated"' "topic websocket emits run lifecycle updates"
+require_output "$QUEUE_WS_OUTPUT" '"state":"running"' "topic websocket emits explicit running run state"
+require_output "$QUEUE_WS_OUTPUT" '"state":"queued"' "later prompts are explicitly queued while the first run is active"
+require_output "$QUEUE_WS_OUTPUT" '"type":"topic_state"' "topic websocket emits authoritative topic state"
 
-QUEUE_JSON="$(curl -sf -H "Authorization: Bearer $QUEUE_TOKEN" "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/topics/$TOPIC_NAME/queue")"
-require_output "$QUEUE_JSON" "\"activePromptId\":\"$QUEUE_FIRST_PROMPT_ID\"" "GET /topics/{topic}/queue shows the active prompt"
-require_output "$QUEUE_JSON" "\"promptId\":\"$QUEUE_SECOND_PROMPT_ID\"" "GET /topics/{topic}/queue lists the queued prompt"
-require_output "$QUEUE_JSON" "\"promptId\":\"$QUEUE_THIRD_PROMPT_ID\"" "GET /topics/{topic}/queue lists all queued prompts"
+QUEUE_JSON="$(curl -sf -H "Authorization: Bearer $QUEUE_TOKEN" "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/topics/$TOPIC_NAME")"
+require_output "$QUEUE_JSON" "\"runId\":\"$QUEUE_FIRST_RUN_ID\"" "GET /topics/{topic} shows the active run"
+require_output "$QUEUE_JSON" "\"runId\":\"$QUEUE_SECOND_RUN_ID\"" "GET /topics/{topic} lists the second queued run"
+require_output "$QUEUE_JSON" "\"runId\":\"$QUEUE_THIRD_RUN_ID\"" "GET /topics/{topic} lists the third queued run"
 
 CLI_QUEUE_OUTPUT="$(
   cd "$AW_DIR"
   WS_MANAGER="http://localhost:$PORT" WS_JWT="$QUEUE_TOKEN" bun run cli.ts queue "$WORKSPACE_NAME" "$TOPIC_NAME"
 )"
-require_output "$CLI_QUEUE_OUTPUT" "active=$QUEUE_FIRST_PROMPT_ID" "cli.ts queue reports the active prompt"
-require_output "$CLI_QUEUE_OUTPUT" "$QUEUE_SECOND_PROMPT_ID queued" "cli.ts queue reports the queued prompt"
-require_output "$CLI_QUEUE_OUTPUT" "$QUEUE_THIRD_PROMPT_ID queued" "cli.ts queue reports later queued prompts"
+require_output "$CLI_QUEUE_OUTPUT" "active=$QUEUE_FIRST_RUN_ID" "cli.ts queue reports the active run"
+require_output "$CLI_QUEUE_OUTPUT" "$QUEUE_SECOND_RUN_ID queued" "cli.ts queue reports the second queued run"
+require_output "$CLI_QUEUE_OUTPUT" "$QUEUE_THIRD_RUN_ID queued" "cli.ts queue reports later queued runs"
 
 QUEUE_PATCH_JSON="$(curl -sf -X PATCH -H "Authorization: Bearer $QUEUE_TOKEN" -H 'Content-Type: application/json' \
-  "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/topics/$TOPIC_NAME/queue/$QUEUE_THIRD_PROMPT_ID" \
+  "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/topics/$TOPIC_NAME/queue/$QUEUE_THIRD_RUN_ID" \
   -d '{"data":"ws text \"smoke queue third edited\""}')"
-require_output "$QUEUE_PATCH_JSON" 'smoke queue third edited' "PATCH /queue/{promptId} updates queued prompt text"
+require_output "$QUEUE_PATCH_JSON" 'smoke queue third edited' "PATCH /queue/{runId} updates queued run text"
 
 QUEUE_MOVE_JSON="$(curl -sf -X POST -H "Authorization: Bearer $QUEUE_TOKEN" -H 'Content-Type: application/json' \
-  "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/topics/$TOPIC_NAME/queue/$QUEUE_THIRD_PROMPT_ID/move" \
+  "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/topics/$TOPIC_NAME/queue/$QUEUE_THIRD_RUN_ID/move" \
   -d '{"direction":"top"}')"
-require_output "$QUEUE_MOVE_JSON" "\"promptId\":\"$QUEUE_THIRD_PROMPT_ID\"" "POST /queue/{promptId}/move returns the updated queue snapshot"
-require_output "$QUEUE_MOVE_JSON" '"position":1' "moving a queued prompt to the top changes its queue position"
+require_output "$QUEUE_MOVE_JSON" "\"runId\":\"$QUEUE_THIRD_RUN_ID\"" "POST /queue/{runId}/move returns the updated topic state"
+require_output "$QUEUE_MOVE_JSON" '"position":1' "moving a queued run to the top changes its queue position"
 
 QUEUE_MOVE_BOTTOM_JSON="$(curl -sf -X POST -H "Authorization: Bearer $QUEUE_TOKEN" -H 'Content-Type: application/json' \
-  "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/topics/$TOPIC_NAME/queue/$QUEUE_THIRD_PROMPT_ID/move" \
+  "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/topics/$TOPIC_NAME/queue/$QUEUE_THIRD_RUN_ID/move" \
   -d '{"direction":"bottom"}')"
-require_output "$QUEUE_MOVE_BOTTOM_JSON" "\"promptId\":\"$QUEUE_THIRD_PROMPT_ID\"" "POST /queue/{promptId}/move also supports bottom"
-require_output "$QUEUE_MOVE_BOTTOM_JSON" '"position":2' "moving a queued prompt to the bottom updates its queue position"
+require_output "$QUEUE_MOVE_BOTTOM_JSON" "\"runId\":\"$QUEUE_THIRD_RUN_ID\"" "POST /queue/{runId}/move also supports bottom"
+require_output "$QUEUE_MOVE_BOTTOM_JSON" '"position":2' "moving a queued run to the bottom updates its queue position"
 
 if command -v chromium >/dev/null 2>&1; then
   QUEUE_APP_DOM="$(chromium --headless --disable-gpu --virtual-time-budget=1000 --dump-dom "http://localhost:$PORT/app/$MANAGER_NAMESPACE/$WORKSPACE_NAME/$TOPIC_NAME" 2>/dev/null)"
-  require_output "$QUEUE_APP_DOM" "Prompt Queue" "topic web UI renders a dedicated queue panel"
-  require_output "$QUEUE_APP_DOM" "Active prompt $QUEUE_FIRST_PROMPT_ID" "topic web UI shows the active prompt in the queue panel"
-  require_output "$QUEUE_APP_DOM" "$QUEUE_SECOND_PROMPT_ID" "topic web UI renders the queued prompt"
-  require_output "$QUEUE_APP_DOM" "smoke queue third edited" "topic web UI renders edited queued prompt text"
-  require_output "$QUEUE_APP_DOM" "Save" "topic web UI exposes queued prompt save controls"
-  require_output "$QUEUE_APP_DOM" "Top" "topic web UI exposes queued prompt move-to-top controls"
-  require_output "$QUEUE_APP_DOM" "Up" "topic web UI exposes queued prompt reorder controls"
-  require_output "$QUEUE_APP_DOM" "Down" "topic web UI exposes queued prompt downward reorder controls"
-  require_output "$QUEUE_APP_DOM" "Bottom" "topic web UI exposes queued prompt move-to-bottom controls"
-  require_output "$QUEUE_APP_DOM" "Delete" "topic web UI exposes queued prompt deletion controls"
+  require_output "$QUEUE_APP_DOM" "Run Queue" "topic web UI renders a dedicated queue panel"
+  require_output "$QUEUE_APP_DOM" "$QUEUE_SECOND_RUN_ID" "topic web UI renders the queued run"
+  require_output "$QUEUE_APP_DOM" "smoke queue third edited" "topic web UI renders edited queued run text"
+  require_output "$QUEUE_APP_DOM" "Save" "topic web UI exposes queued run save controls"
+  require_output "$QUEUE_APP_DOM" "Top" "topic web UI exposes queued run move-to-top controls"
+  require_output "$QUEUE_APP_DOM" "Up" "topic web UI exposes queued run reorder controls"
+  require_output "$QUEUE_APP_DOM" "Down" "topic web UI exposes queued run downward reorder controls"
+  require_output "$QUEUE_APP_DOM" "Bottom" "topic web UI exposes queued run move-to-bottom controls"
+  require_output "$QUEUE_APP_DOM" "Delete" "topic web UI exposes queued run deletion controls"
 fi
 
 curl -sf -X DELETE -H "Authorization: Bearer $QUEUE_TOKEN" \
-  "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/topics/$TOPIC_NAME/queue/$QUEUE_SECOND_PROMPT_ID" >/dev/null
-QUEUE_AFTER_CANCEL="$(curl -sf -H "Authorization: Bearer $QUEUE_TOKEN" "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/topics/$TOPIC_NAME/queue")"
-if [[ "$QUEUE_AFTER_CANCEL" == *"\"promptId\":\"$QUEUE_SECOND_PROMPT_ID\""* ]]; then
-  printf '  ✗ queued prompt still present after DELETE /queue/{promptId}\n'
-  printf '    queue body:\n%s\n' "$QUEUE_AFTER_CANCEL"
+  "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/topics/$TOPIC_NAME/queue/$QUEUE_SECOND_RUN_ID" >/dev/null
+QUEUE_AFTER_CANCEL="$(curl -sf -H "Authorization: Bearer $QUEUE_TOKEN" "http://localhost:$PORT/apis/v1/namespaces/$MANAGER_NAMESPACE/workspaces/$WORKSPACE_NAME/topics/$TOPIC_NAME")"
+if [[ "$QUEUE_AFTER_CANCEL" == *"\"runId\":\"$QUEUE_SECOND_RUN_ID\""* ]]; then
+  printf '  ✗ queued run still present after DELETE /queue/{runId}\n'
+  printf '    topic state body:\n%s\n' "$QUEUE_AFTER_CANCEL"
   exit 1
 fi
-printf '  ✓ DELETE /queue/{promptId} removes the queued prompt through the manager\n'
+printf '  ✓ DELETE /queue/{runId} removes the queued run through the manager\n'
 
 if [[ "$RUNTIME_MODE" == "bwrap" ]]; then
   log "Checking bwrap filesystem isolation"
