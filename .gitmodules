@@ -1,6 +1,6 @@
 [submodule "agentic-workspace"]
 	path = agentic-workspace
-	url = https://github.com/jmandel/agentic-workspace-shelley-demo.git
+	url = https://github.com/jmandel/agentic-workspace.git
 [submodule "shelley"]
 	path = shelley
 	url = https://github.com/jmandel/shelley.git
