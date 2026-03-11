@@ -4,6 +4,7 @@ import { Router, Route, Switch } from "wouter";
 import { HomePage } from "@/pages/HomePage";
 import { WorkspacePage } from "@/pages/WorkspacePage";
 import { TopicPage } from "@/pages/TopicPage";
+import { WorkspaceFilesPage } from "@/pages/WorkspaceFilesPage";
 import { AboutPage } from "@/pages/AboutPage";
 import "@/index.css";
 
@@ -12,6 +13,10 @@ function App() {
     <Router>
       <Switch>
         <Route path="/" component={HomePage} />
+        <Route
+          path="/app/:namespace/:workspace/:topic/files"
+          component={WorkspaceFilesPage}
+        />
         <Route
           path="/app/:namespace/:workspace/:topic"
           component={TopicPage}
