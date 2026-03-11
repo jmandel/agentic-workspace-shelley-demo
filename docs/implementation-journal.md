@@ -866,7 +866,7 @@
   - `jmandel/shelley` already existed as a fork
   - created `jmandel/agentic-workspace` as a fork
   - created `jmandel/workspace-protocol` for this root project
-- Pushed branch `workspace-protocol-queue-demo` to:
+- Pushed branch `agentic-workspace-shelley-demo` to:
   - `jmandel/shelley`
   - `jmandel/agentic-workspace`
 - Converted the root repo to proper submodules:
