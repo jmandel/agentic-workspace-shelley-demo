@@ -276,6 +276,72 @@ function reconcilePendingSubmissions(
   return pendingPromptTexts.slice(Math.min(visibleOwnRuns, pendingPromptTexts.length));
 }
 
+function compareQueuePosition(left: TopicRun, right: TopicRun): number {
+  const leftPos = left.position ?? Number.MAX_SAFE_INTEGER;
+  const rightPos = right.position ?? Number.MAX_SAFE_INTEGER;
+  if (leftPos !== rightPos) return leftPos - rightPos;
+  return left.runId.localeCompare(right.runId);
+}
+
+export function applyRunUpdatedToTopicState(
+  current: {
+    activeRun: TopicRun | null | undefined;
+    queue: TopicRun[];
+    pendingPromptTexts: string[];
+  },
+  participantSubject: string,
+  msg: TopicMessage,
+): {
+  activeRun: TopicRun | null;
+  queue: TopicRun[];
+  pendingPromptTexts: string[];
+  turnActive: boolean;
+} {
+  const pendingPromptTexts = consumePendingSubmission(
+    current.pendingPromptTexts,
+    participantSubject,
+    msg,
+  );
+
+  let activeRun = current.activeRun ?? null;
+  let queue = current.queue;
+  const runId = msg.runId || "";
+
+  if (runId && msg.state === "running") {
+    activeRun = {
+      runId,
+      state: "running",
+      interruptible: activeRun?.runId === runId ? activeRun.interruptible : true,
+      submittedBy: msg.submittedBy ?? activeRun?.submittedBy,
+    };
+    queue = queue.filter((run) => run.runId !== runId);
+  } else if (runId && msg.state === "queued") {
+    const queuedRun: TopicRun = {
+      runId,
+      state: "queued",
+      text: msg.text,
+      position: msg.position,
+      submittedBy: msg.submittedBy,
+    };
+    queue = [...queue.filter((run) => run.runId !== runId), queuedRun].sort(compareQueuePosition);
+  } else if (
+    runId &&
+    (msg.state === "completed" || msg.state === "cancelled" || msg.state === "failed")
+  ) {
+    if (activeRun?.runId === runId) {
+      activeRun = null;
+    }
+    queue = queue.filter((run) => run.runId !== runId);
+  }
+
+  return {
+    activeRun,
+    queue,
+    pendingPromptTexts,
+    turnActive: deriveTurnActive(activeRun, pendingPromptTexts),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Store
 // ---------------------------------------------------------------------------
@@ -938,9 +1004,6 @@ export const useStore = create<AppState>((set, get) => ({
         );
       },
       reconnect: () => get().connectTopic(namespace, workspace, topic),
-      onConnected: () => {
-        void get().refreshTopicState();
-      },
       onMessage: (msg) => {
         const { pushMessage } = get();
         switch (msg.type) {
@@ -963,14 +1026,20 @@ export const useStore = create<AppState>((set, get) => ({
           }
           case "run_updated":
             set((state) => {
-              const pendingPromptTexts = consumePendingSubmission(
-                state._pendingPromptTexts,
+              const next = applyRunUpdatedToTopicState(
+                {
+                  activeRun: state.activeRun,
+                  queue: state.queue,
+                  pendingPromptTexts: state._pendingPromptTexts,
+                },
                 state.participantSubject,
                 msg,
               );
               return {
-                _pendingPromptTexts: pendingPromptTexts,
-                turnActive: deriveTurnActive(state.activeRun, pendingPromptTexts),
+                activeRun: next.activeRun,
+                queue: next.queue,
+                _pendingPromptTexts: next.pendingPromptTexts,
+                turnActive: next.turnActive,
               };
             });
 

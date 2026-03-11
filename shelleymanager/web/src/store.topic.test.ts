@@ -67,4 +67,69 @@ describe("topic store", () => {
     expect(useStore.getState()._pendingPromptTexts).toEqual(["queued prompt"]);
     expect(useStore.getState().turnActive).toBeTrue();
   });
+
+  test("run_updated running promotes the active run before topic_state arrives", async () => {
+    const { applyRunUpdatedToTopicState } = await import("./store");
+
+    const next = applyRunUpdatedToTopicState(
+      {
+        activeRun: null,
+        queue: [],
+        pendingPromptTexts: ["first prompt"],
+      },
+      "cli-a",
+      {
+        type: "run_updated",
+        runId: "r_1",
+        state: "running",
+        submittedBy: { id: "cli-a", displayName: "CLI A" },
+      },
+    );
+
+    expect(next.pendingPromptTexts).toEqual([]);
+    expect(next.activeRun).toEqual({
+      runId: "r_1",
+      state: "running",
+      interruptible: true,
+      submittedBy: { id: "cli-a", displayName: "CLI A" },
+    });
+    expect(next.turnActive).toBeTrue();
+  });
+
+  test("run_updated queued materializes a queued run immediately", async () => {
+    const { applyRunUpdatedToTopicState } = await import("./store");
+
+    const next = applyRunUpdatedToTopicState(
+      {
+        activeRun: {
+          runId: "r_active",
+          state: "running",
+          interruptible: true,
+        },
+        queue: [],
+        pendingPromptTexts: ["queued prompt"],
+      },
+      "cli-a",
+      {
+        type: "run_updated",
+        runId: "r_queued",
+        state: "queued",
+        text: "queued prompt",
+        position: 1,
+        submittedBy: { id: "cli-a", displayName: "CLI A" },
+      },
+    );
+
+    expect(next.pendingPromptTexts).toEqual([]);
+    expect(next.queue).toEqual([
+      {
+        runId: "r_queued",
+        state: "queued",
+        text: "queued prompt",
+        position: 1,
+        submittedBy: { id: "cli-a", displayName: "CLI A" },
+      },
+    ]);
+    expect(next.turnActive).toBeTrue();
+  });
 });
