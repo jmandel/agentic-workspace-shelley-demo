@@ -123,6 +123,19 @@ If you already cloned without `--recurse-submodules`:
 git submodule update --init --recursive
 ```
 
+When updating an existing checkout, do not stop at `git pull`. Update the
+submodule worktrees too:
+
+```bash
+git pull --ff-only
+git submodule update --init --recursive
+git submodule status
+```
+
+If `git status` shows `M agentic-workspace` or `M shelley` immediately after
+pulling, the submodule checkout is not at the commit pinned by the parent repo
+yet.
+
 ### Run with mock LLM (no API key needed)
 
 ```bash
