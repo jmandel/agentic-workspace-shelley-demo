@@ -2,6 +2,9 @@
 .demo-run/
 .demo/
 shelleymanager/.demo-bin/
+shelleymanager/.shelleymanager-state.backup-*/
 shelleymanager/.shelleymanager-state/
+shelleymanager/bin/
+shelleymanager/*.log
 shelleymanager/shelleymanager
 shelleymanager/manager/acme/
