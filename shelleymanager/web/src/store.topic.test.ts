@@ -132,4 +132,36 @@ describe("topic store", () => {
     ]);
     expect(next.turnActive).toBeTrue();
   });
+
+  test("run_updated running respects explicit interruptible state from the server", async () => {
+    const { applyRunUpdatedToTopicState } = await import("./store");
+
+    const next = applyRunUpdatedToTopicState(
+      {
+        activeRun: {
+          runId: "r_active",
+          state: "running",
+          interruptible: false,
+        },
+        queue: [],
+        pendingPromptTexts: [],
+      },
+      "cli-a",
+      {
+        type: "run_updated",
+        runId: "r_active",
+        state: "running",
+        interruptible: true,
+        submittedBy: { id: "cli-a", displayName: "CLI A" },
+      },
+    );
+
+    expect(next.activeRun).toEqual({
+      runId: "r_active",
+      state: "running",
+      interruptible: true,
+      submittedBy: { id: "cli-a", displayName: "CLI A" },
+    });
+    expect(next.turnActive).toBeTrue();
+  });
 });

@@ -145,6 +145,7 @@ export interface TopicMessage {
   interruptedBy?: TopicActor;
   activeRun?: TopicRun;
   queue?: TopicRun[];
+  interruptible?: boolean;
   rawInput?: Record<string, unknown>;
   injectId?: string;
   reason?: string;

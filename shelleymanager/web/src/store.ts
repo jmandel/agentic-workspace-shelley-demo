@@ -24,6 +24,7 @@ import {
 
 const EVENTS_RECONNECT_DELAY_MS = 3000;
 const TOPIC_RECONNECT_DELAY_MS = 1500;
+const TOPIC_STALE_TIMEOUT_MS = 45000;
 
 // ---------------------------------------------------------------------------
 // Chat message (accumulated from WebSocket events)
@@ -311,7 +312,12 @@ export function applyRunUpdatedToTopicState(
     activeRun = {
       runId,
       state: "running",
-      interruptible: activeRun?.runId === runId ? activeRun.interruptible : true,
+      interruptible:
+        typeof msg.interruptible === "boolean"
+          ? msg.interruptible
+          : activeRun?.runId === runId
+            ? activeRun.interruptible
+            : true,
       submittedBy: msg.submittedBy ?? activeRun?.submittedBy,
     };
     queue = queue.filter((run) => run.runId !== runId);
@@ -992,6 +998,7 @@ export const useStore = create<AppState>((set, get) => ({
     connectAuthenticatedSocket<TopicMessage>({
       url,
       reconnectDelayMs: TOPIC_RECONNECT_DELAY_MS,
+      staleTimeoutMs: TOPIC_STALE_TIMEOUT_MS,
       getActiveSocket: () => get()._ws,
       setActiveSocket: (_ws) => set({ _ws }),
       setStatus: (connectionStatus) => set({ connectionStatus }),
@@ -1003,6 +1010,7 @@ export const useStore = create<AppState>((set, get) => ({
           current?.topic === topic
         );
       },
+      shouldConsiderStale: () => get().turnActive,
       reconnect: () => get().connectTopic(namespace, workspace, topic),
       onMessage: (msg) => {
         const { pushMessage } = get();
